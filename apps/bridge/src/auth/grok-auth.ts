@@ -24,8 +24,7 @@ export const GROK_PROXY_BASE = 'https://cli-chat-proxy.grok.com/v1';
 // The proxy answers HTTP 426 when this is missing or older than 1.0.13
 // ("Grok CLI version (none) is outdated"). Keep it on a current stable CLI release.
 const GROK_CLIENT_VERSION = '1.0.92';
-/** Stable connection id for the signed-in Grok account. It is not an API-key connection. */
-export const GROK_SUBSCRIPTION_ID = '6f0e2c1a-9b4d-4e7a-8c31-0a5d7e9b2f14';
+export { GROK_SUBSCRIPTION_ID } from '@wisp/protocol/providers';
 const ALLOWED_HOSTS = new Set(['accounts.x.ai', 'auth.x.ai']);
 const tokenSet = z.object({
   accessToken: z.string().min(1),

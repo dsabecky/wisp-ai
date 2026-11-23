@@ -1,3 +1,4 @@
+import { connectionModelSlug, GROK_SUBSCRIPTION_ID } from '@wisp/protocol/providers';
 import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 
@@ -1587,6 +1588,61 @@ test('first-time setup resumes at the provider step and opens Overview after sav
   renderApp();
   await screen.findByRole('heading', { name: 'Connect your AI account' });
   expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeTruthy();
+});
+
+test('Grok subscription onboarding lists the account models and can finish setup', async () => {
+  localStorage.setItem('wisp:onboarding:v1', 'pending');
+  status.auth = { status: 'signed_out', profiles: [], revision: 1 };
+  status.grok = { status: 'signed_out', profiles: [], revision: 1 };
+  status.model = '';
+  status.modelConnected = false;
+  const slug = connectionModelSlug(GROK_SUBSCRIPTION_ID, 'grok-4.5');
+  const original = vi.mocked(request).getMockImplementation()!;
+  vi.mocked(request).mockImplementation(async (route, body) => {
+    if (route === '/auth/models') {
+      return {
+        models: [
+          { slug: 'luna', displayName: 'Luna', efforts: ['low'] },
+          { slug, displayName: 'Grok 4.5', efforts: ['low'] },
+        ],
+      } as never;
+    }
+    if (route === '/grok/start') {
+      return {
+        authorizationUrl: 'https://accounts.x.ai/device',
+        userCode: 'ABCD-EFGH',
+      } as never;
+    }
+    if (route === '/auth/model') {
+      status.model = (body as { model: string }).model;
+      status.modelConnected = true;
+    }
+    return original(route, body);
+  });
+  renderApp();
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse providers' }));
+  const catalog = within(await screen.findByRole('dialog', { name: 'Browse providers' }));
+  await fireEvent.input(catalog.getByRole('searchbox', { name: 'Search providers' }), {
+    target: { value: 'grok' },
+  });
+  await fireEvent.click(catalog.getByRole('button', { name: 'Grok' }));
+  await screen.findByRole('heading', { level: 2, name: 'Grok' });
+  await fireEvent.click(screen.getByRole('button', { name: 'Continue with Grok' }));
+  await waitFor(() =>
+    expect(desktop).toHaveBeenCalledWith('open_sign_in', {
+      url: 'https://accounts.x.ai/device',
+    }),
+  );
+  status.grok = { ...status.grok, status: 'connected', revision: status.grok.revision + 1 };
+  await act(() => desktopStore.getState().actions.refresh());
+  expect(await screen.findByRole('heading', { name: 'Grok added' })).toBeTruthy();
+  expect(screen.getByText('Grok 4.5')).toBeTruthy();
+  expect(screen.queryByText('Luna')).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Finish setup' }).disabled).toBe(
+    false,
+  );
+  await fireEvent.click(screen.getByRole('button', { name: 'Finish setup' }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith('/auth/model', { model: slug }));
 });
 
 test('onboarding searches the provider catalog and suggests a single saved model', async () => {

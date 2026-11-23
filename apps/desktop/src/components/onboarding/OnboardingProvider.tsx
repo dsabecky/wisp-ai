@@ -1,4 +1,4 @@
-import type { ProviderId } from '@wisp/protocol/providers';
+import { GROK_SUBSCRIPTION_ID, type ProviderId } from '@wisp/protocol/providers';
 import { useEffect, useRef, useState } from 'react';
 import { bridge, call } from '../../api';
 import { desktopLocked } from '../../desktop-controller';
@@ -69,7 +69,18 @@ export default function OnboardingProvider({
   }, [method]);
 
   if (reviewing) {
-    return <DefaultModelSettings onFinish={onFinish} review={{ provider, connectionId, onBack }} />;
+    return (
+      <DefaultModelSettings
+        onFinish={onFinish}
+        review={{
+          provider,
+          // API-key setup has a saved connection. A Grok account uses the stable
+          // subscription id its models are slugged with. ChatGPT models have none.
+          connectionId: connectionId ?? (provider === 'xai' ? GROK_SUBSCRIPTION_ID : undefined),
+          onBack,
+        }}
+      />
+    );
   }
 
   const existing = connections?.filter((connection) => connection.provider === provider) ?? [];
