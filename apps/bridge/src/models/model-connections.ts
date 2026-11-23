@@ -772,6 +772,9 @@ export class ModelConnections implements ModelCatalog {
       await response.body?.cancel();
       token = await this.grok.accessToken(token);
       response = await send(token);
+      if (response.status === 401) {
+        await this.grok.rejectSession();
+      }
     }
     if (!response.ok) {
       const error = await normalizeModelError(response);
@@ -830,6 +833,9 @@ export class ModelConnections implements ModelCatalog {
       await response.body?.cancel();
       token = await this.grok.accessToken(token);
       response = await send(token);
+      if (response.status === 401) {
+        await this.grok.rejectSession();
+      }
     }
     if (!response.ok) {
       const redact = (value: unknown): unknown => {

@@ -436,6 +436,16 @@ export class GrokAuth {
     this.refreshes.set(profile.id, work);
     return work;
   }
+  /** The token endpoint accepted a refresh, but the proxy still rejected the session. */
+  async rejectSession() {
+    const profile = this.current();
+    if (!profile || profile.frozen) {
+      return;
+    }
+    profile.frozen = true;
+    this.message = 'Grok rejected this session. Please sign in again.';
+    await this.persist();
+  }
   async disconnect() {
     await this.cancel(false);
     this.signingOut = true;
@@ -498,6 +508,9 @@ export class GrokAuth {
         redirect: 'error',
         signal: AbortSignal.timeout(15000),
       });
+      if (response.status === 401) {
+        await this.rejectSession();
+      }
     }
     if (!response.ok) {
       throw new GrokAuthError('Could not load models for this Grok account.');

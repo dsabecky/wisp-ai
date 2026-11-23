@@ -1051,3 +1051,46 @@ test('a signed-in Grok account is used instead of an API key', async () => {
   expect(requests[0]!.body.store).toBe(false);
   expect(JSON.stringify(requests)).not.toContain('loopback');
 });
+
+test('a second Grok 401 marks the session for reauthentication', async () => {
+  const rejectSession = vi.fn(async () => {});
+  const grok = {
+    state: () => ({ status: 'connected' }),
+    models: async () => [{ id: 'grok-4.5', name: 'Grok 4.5' }],
+    accessToken: async (rejected?: string) => (rejected ? 'renewed-token' : 'oauth-token'),
+    rejectSession,
+  };
+  const slug = connectionModelSlug(GROK_SUBSCRIPTION_ID, 'grok-4.5');
+  const signal = new AbortController().signal;
+  const denied = await fixture(async () => new Response('denied', { status: 401 }));
+  Object.assign(denied.manager, { grok });
+  const forwarded = await denied.manager.forward(
+    GROK_SUBSCRIPTION_ID,
+    '/responses',
+    JSON.stringify({ model: 'grok-4.5' }),
+    new Headers(),
+    signal,
+  );
+  expect(forwarded.status).toBe(401);
+  await expect(denied.manager.complete(slug, 'Name it', 'Hola', signal)).rejects.toThrow(
+    'unavailable',
+  );
+  expect(rejectSession).toHaveBeenCalledTimes(2);
+
+  rejectSession.mockClear();
+  let calls = 0;
+  const outage = await fixture(async () => {
+    calls += 1;
+    return new Response('down', { status: calls === 1 ? 401 : 503 });
+  });
+  Object.assign(outage.manager, { grok });
+  const response = await outage.manager.forward(
+    GROK_SUBSCRIPTION_ID,
+    '/responses',
+    JSON.stringify({ model: 'grok-4.5' }),
+    new Headers(),
+    signal,
+  );
+  expect(response.status).toBe(503);
+  expect(rejectSession).not.toHaveBeenCalled();
+});

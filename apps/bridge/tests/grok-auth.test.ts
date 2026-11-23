@@ -210,3 +210,78 @@ test('an expired access token is refreshed once', async () => {
   expect(secrets.values.get('grok:accounts')).toContain('renewed-refresh');
   expect(secrets.values.get('grok:accounts')).not.toContain('old-refresh');
 });
+
+test('a second model-catalog 401 requires a new sign-in', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  let models = 0;
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    fetch: async (input) => {
+      if (String(input).endsWith('/models-v2')) {
+        models += 1;
+        return new Response('denied', { status: 401 });
+      }
+      return Response.json({
+        access_token: 'renewed-access',
+        refresh_token: 'renewed-refresh',
+        expires_in: 900,
+        scope: 'grok-cli:access',
+      });
+    },
+  });
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: now + 120_000,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  await auth.load();
+  await expect(auth.models()).rejects.toThrow('Could not load models');
+  expect(models).toBe(2);
+  expect(auth.state().status).toBe('reauth_required');
+  expect(auth.state().message).toBe('Grok rejected this session. Please sign in again.');
+  await expect(auth.accessToken()).rejects.toThrow('Sign in with Grok');
+});
+
+test('a model-catalog outage leaves the Grok session connected', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    fetch: async () => new Response('down', { status: 503 }),
+  });
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: now + 120_000,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  await auth.load();
+  await expect(auth.models()).rejects.toThrow('Could not load models');
+  expect(auth.state().status).toBe('connected');
+});
