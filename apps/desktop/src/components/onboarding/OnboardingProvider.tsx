@@ -8,15 +8,23 @@ import DefaultModelSettings from '../connections/DefaultModelSettings';
 import { ProviderLogo, providerPresentation } from '../connections/provider-directory';
 import { Button, Card } from '../ui/Controls';
 import Icon from '../ui/Icon';
+import {
+  trackOnboarding,
+  type ProviderConnectError,
+  type ProviderConnectMethod,
+} from './onboarding-telemetry';
+import type { SignInTracking } from './use-sign-in-tracking';
 
 export default function OnboardingProvider({
   provider,
   onBack,
   onFinish,
+  signInTracking,
 }: {
   provider: ProviderId;
   onBack: () => void;
   onFinish: () => void;
+  signInTracking: SignInTracking;
 }) {
   const { auth, connections, locked, busy } = useDesktop((state) => ({
     auth: state.status?.auth,
@@ -34,6 +42,23 @@ export default function OnboardingProvider({
   const pending = auth?.status === 'authorizing';
   const reviewing = !!connectionId || (method === 'subscription' && connected);
   const panel = useRef<HTMLHeadingElement>(null);
+
+  function connectFinished(
+    connectMethod: ProviderConnectMethod,
+    outcome: 'completed' | ProviderConnectError,
+  ) {
+    trackOnboarding(
+      outcome === 'completed'
+        ? { kind: 'provider_connect_finished', provider, method: connectMethod, outcome }
+        : {
+            kind: 'provider_connect_finished',
+            provider,
+            method: connectMethod,
+            outcome: 'failed',
+            error_code: outcome,
+          },
+    );
+  }
 
   useEffect(() => {
     panel.current?.focus();
@@ -80,7 +105,11 @@ export default function OnboardingProvider({
             provider={provider}
             connection={existing.length === 1 ? existing[0] : undefined}
             close={onBack}
-            onConnected={setConnectionId}
+            onConnected={(id) => {
+              connectFinished('api_key', 'completed');
+              setConnectionId(id);
+            }}
+            onSetupFailed={(code) => connectFinished('api_key', code)}
           />
         ) : (
           <>
@@ -101,9 +130,10 @@ export default function OnboardingProvider({
               {pending ? (
                 <Button
                   disabled={!!busy}
-                  onClick={() =>
-                    void work('Cancelling sign-in', () => call(bridge.auth.cancel.$post()), null)
-                  }
+                  onClick={() => {
+                    signInTracking.cancelling();
+                    void work('Cancelling sign-in', () => call(bridge.auth.cancel.$post()), null);
+                  }}
                 >
                   Cancel sign-in
                 </Button>
@@ -113,7 +143,12 @@ export default function OnboardingProvider({
                   disabled={locked}
                   onClick={() => {
                     setMethod('subscription');
-                    if (!connected) void signIn(auth?.activeId || undefined);
+                    // An existing session was already reported when its sign-in ended.
+                    if (connected) return;
+                    signInTracking.started(provider);
+                    void signIn(auth?.activeId || undefined).then((opened) => {
+                      if (!opened) signInTracking.openFailed(provider);
+                    });
                   }}
                 >
                   {busy === 'Opening sign-in'

@@ -8,7 +8,7 @@ import type { GameRequests } from './game-requests.ts';
 import type { IntegrationState } from '../integrations/integration-state.ts';
 import type { SessionState } from '../session-state.ts';
 import type { SnapshotGate } from './snapshots.ts';
-import { DiskTransport } from './transport.ts';
+import { DiskTransport, type SlowDownlink } from './transport.ts';
 
 export interface TransportConnectionDependencies {
   state: SessionState;
@@ -22,7 +22,7 @@ export interface TransportConnectionDependencies {
   saveWow: (wow: string) => Promise<void>;
   changed: () => void;
   isStopping: () => boolean;
-  logger: Pick<Logger, 'error'>;
+  logger: Pick<Logger, 'error' | 'info'>;
 }
 
 export interface TransportConnection {
@@ -58,6 +58,26 @@ export function createTransportConnection(
     );
   }
 
+  // Logged once per waiting window, not on every 60-second heartbeat.
+  const heldOff = new Set<string>();
+  function logHeldOff(session: string) {
+    if (heldOff.has(session) || heldOff.size >= 32) return;
+    heldOff.add(session);
+    logger.info(
+      { event: 'transport.heartbeat_held_off' },
+      'Another game window is connected; its heartbeat did not take the bridge',
+    );
+  }
+
+  function logSlowDownlink(report: SlowDownlink) {
+    logger.info(
+      { event: `transport.downlink_${report.phase}`, ...report },
+      report.phase === 'stalled'
+        ? 'A reply is taking long to reach the game'
+        : 'A slow reply reached the game',
+    );
+  }
+
   async function disconnect() {
     const previous = transport;
     transport = undefined;
@@ -87,6 +107,8 @@ export function createTransportConnection(
         if (transport === next) deps.receive(packet);
       },
       logError,
+      logHeldOff,
+      logSlowDownlink,
     );
     transport = next;
     try {

@@ -54,7 +54,7 @@ test('connections persist metadata separately from secrets and work without Chat
   await manager.prepare(slug);
   expect(chatgpt.accessToken).not.toHaveBeenCalled();
   expect(await manager.models()).toEqual([
-    { slug, displayName: 'Claude / claude-test', efforts: [], contextWindow: 200000 },
+    { slug, displayName: 'claude-test', efforts: [], contextWindow: 200000 },
   ]);
   const restored = new ModelConnections(file, vault, chatgpt as unknown as ChatGPTAuth);
   await restored.load();
@@ -64,6 +64,28 @@ test('connections persist metadata separately from secrets and work without Chat
   await restored.remove(id);
   expect(secrets.get('ai-connection:' + id)).toBe('');
   await expect(restored.prepare(slug)).rejects.toThrow('not found');
+});
+
+test('a provider exists once ChatGPT was signed in or an API connection has a key', async () => {
+  const { manager, chatgpt } = await fixture();
+  let status = 'signed_out';
+  chatgpt.state = () => ({ status });
+  expect(manager.hasProvider()).toBe(false);
+  // An expired or limited ChatGPT account still counts: its own error explains the fix.
+  status = 'reauth_required';
+  expect(manager.hasProvider()).toBe(true);
+  status = 'signed_out';
+  const { id } = await manager.save(setup);
+  expect(manager.hasProvider()).toBe(true);
+  await manager.remove(id);
+  expect(manager.hasProvider()).toBe(false);
+  await manager.save({
+    provider: 'compatible',
+    name: 'Local',
+    baseURL: 'http://127.0.0.1:11434/v1',
+    models: [{ id: 'local-test', contextWindow: 32000 }],
+  });
+  expect(manager.hasProvider()).toBe(true);
 });
 
 test('a failed metadata write rolls back the API key', async () => {
@@ -142,11 +164,13 @@ test.each(['openrouter', 'gateway', 'compatible'] as const)(
     expect(models.map(({ id, supportsTools }) => [id, supportsTools])).toEqual([
       ['lab/tools', true],
       ['lab/text', false],
-      ['lab/unknown', undefined],
-      ['lab/tagged', provider === 'gateway' ? true : undefined],
+      // A local server's models are the player's own choice; aggregators must say.
+      ['lab/unknown', provider === 'compatible' ? true : undefined],
+      ['lab/tagged', provider === 'openrouter' ? undefined : true],
     ]);
     expect(models[0]).toMatchObject({ name: 'Tools', contextWindow: 32000 });
-    expect(models[2]?.contextWindow).toBeUndefined();
+    // Unsized models get the conservative fallback instead of asking the player.
+    expect(models[2]?.contextWindow).toBe(provider === 'compatible' ? 32_768 : 128_000);
     const { id } = await manager.save({
       provider,
       name: 'Models',
@@ -157,6 +181,286 @@ test.each(['openrouter', 'gateway', 'compatible'] as const)(
     expect(manager.get(id).models[0]).not.toHaveProperty('supportsTools');
   },
 );
+
+test('anthropic discovery marks native models as supporting tools', async () => {
+  const { manager } = await fixture(async () =>
+    Response.json({
+      data: [
+        {
+          type: 'model',
+          id: 'claude-sonnet-4-6',
+          display_name: 'Claude Sonnet 4.6',
+          max_input_tokens: 1000000,
+        },
+      ],
+    }),
+  );
+  const found = await manager.discover({
+    provider: 'anthropic',
+    name: 'Anthropic / Claude',
+    apiKey: 'key',
+  });
+  const { models } = desktopRoutes['/connections/discover'].output.parse(found);
+  expect(models).toEqual([
+    expect.objectContaining({
+      id: 'claude-sonnet-4-6',
+      name: 'Claude Sonnet 4.6',
+      contextWindow: 1000000,
+      supportsTools: true,
+    }),
+  ]);
+  const custom = await manager.discover({
+    provider: 'anthropic',
+    name: 'Custom Anthropic Proxy',
+    apiKey: 'key',
+    baseURL: 'https://proxy.example.com/v1',
+  });
+  const { models: customModels } = desktopRoutes['/connections/discover'].output.parse(custom);
+  expect(customModels[0]?.supportsTools).toBeUndefined();
+});
+
+test.each([
+  {
+    provider: 'google',
+    body: {
+      models: [
+        { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemini-flash-latest', supportedGenerationMethods: ['generateContent'] },
+        { name: 'models/gemma-3-27b-it', supportedGenerationMethods: ['generateContent'] },
+        {
+          name: 'models/gemini-2.5-flash-preview-tts',
+          supportedGenerationMethods: ['generateContent'],
+        },
+        { name: 'models/gemini-embedding-001', supportedGenerationMethods: ['embedContent'] },
+      ],
+    },
+    expected: {
+      'gemini-2.5-flash': true,
+      'gemini-flash-latest': true,
+      'gemma-3-27b-it': undefined,
+      'gemini-2.5-flash-preview-tts': undefined,
+    },
+  },
+  {
+    provider: 'openai',
+    body: {
+      data: [
+        { id: 'gpt-5' },
+        { id: 'gpt-4o-2024-08-06' },
+        { id: 'o3' },
+        { id: 'gpt-5-chat-latest' },
+        { id: 'text-embedding-3-small' },
+        { id: 'whisper-1' },
+      ],
+    },
+    expected: {
+      'gpt-5': true,
+      'gpt-4o-2024-08-06': true,
+      o3: true,
+      'gpt-5-chat-latest': false,
+      'text-embedding-3-small': undefined,
+      'whisper-1': undefined,
+    },
+  },
+  {
+    provider: 'mistral',
+    body: {
+      data: [
+        { id: 'mistral-small-latest', capabilities: { function_calling: true } },
+        { id: 'ft:mistral-small:custom', capabilities: { function_calling: false } },
+      ],
+    },
+    expected: { 'mistral-small-latest': true, 'ft:mistral-small:custom': false },
+  },
+  {
+    provider: 'cohere',
+    body: {
+      models: [
+        { name: 'command-a-03-2025', features: ['json_mode', 'tools', 'tool_choice'] },
+        { name: 'embed-v4.0', features: [] },
+      ],
+    },
+    expected: { 'command-a-03-2025': true, 'embed-v4.0': false },
+  },
+  {
+    provider: 'fireworks',
+    body: {
+      data: [
+        { id: 'accounts/fireworks/models/kimi-k2p5', supports_tools: true },
+        { id: 'accounts/fireworks/models/flux-1-dev', supports_tools: false },
+      ],
+    },
+    expected: {
+      'accounts/fireworks/models/kimi-k2p5': true,
+      'accounts/fireworks/models/flux-1-dev': false,
+    },
+  },
+  {
+    provider: 'deepseek',
+    body: { data: [{ id: 'deepseek-chat' }] },
+    expected: { 'deepseek-chat': true },
+  },
+  {
+    provider: 'xai',
+    body: { data: [{ id: 'grok-4' }, { id: 'grok-code-fast-1' }, { id: 'grok-2-image-1212' }] },
+    expected: { 'grok-4': true, 'grok-code-fast-1': true, 'grok-2-image-1212': false },
+  },
+  {
+    provider: 'groq',
+    body: {
+      data: [
+        { id: 'llama-3.3-70b-versatile' },
+        { id: 'openai/gpt-oss-120b' },
+        { id: 'whisper-large-v3-turbo' },
+        { id: 'playai-tts' },
+        { id: 'meta-llama/llama-guard-4-12b' },
+        { id: 'groq/compound' },
+      ],
+    },
+    expected: {
+      'llama-3.3-70b-versatile': true,
+      'openai/gpt-oss-120b': true,
+      'whisper-large-v3-turbo': false,
+      'playai-tts': false,
+      'meta-llama/llama-guard-4-12b': false,
+      'groq/compound': false,
+    },
+  },
+  {
+    provider: 'cerebras',
+    body: { data: [{ id: 'gpt-oss-120b' }, { id: 'llama-3.3-70b' }] },
+    expected: { 'gpt-oss-120b': true, 'llama-3.3-70b': true },
+  },
+  {
+    provider: 'togetherai',
+    body: [
+      { id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', type: 'chat' },
+      { id: 'black-forest-labs/FLUX.1-schnell', type: 'image' },
+      { id: 'BAAI/bge-large-en-v1.5', type: 'embedding' },
+    ],
+    expected: {
+      'meta-llama/Llama-3.3-70B-Instruct-Turbo': true,
+      'black-forest-labs/FLUX.1-schnell': false,
+      'BAAI/bge-large-en-v1.5': false,
+    },
+  },
+  {
+    provider: 'deepinfra',
+    body: {
+      data: [
+        { id: 'meta-llama/Llama-3.3-70B-Instruct' },
+        { id: 'BAAI/bge-m3' },
+        { id: 'openai/whisper-large-v3' },
+      ],
+    },
+    expected: {
+      'meta-llama/Llama-3.3-70B-Instruct': true,
+      'BAAI/bge-m3': false,
+      'openai/whisper-large-v3': false,
+    },
+  },
+  {
+    provider: 'alibaba',
+    body: {
+      data: [
+        { id: 'qwen-plus' },
+        { id: 'qwen3-max' },
+        { id: 'text-embedding-v4' },
+        { id: 'qwen-image-plus' },
+        { id: 'qwen3-tts-flash' },
+      ],
+    },
+    expected: {
+      'qwen-plus': true,
+      'qwen3-max': true,
+      'text-embedding-v4': false,
+      'qwen-image-plus': false,
+      'qwen3-tts-flash': false,
+    },
+  },
+  {
+    provider: 'moonshotai',
+    body: { data: [{ id: 'kimi-k2.5' }, { id: 'moonshot-v1-8k-vision-preview' }] },
+    expected: { 'kimi-k2.5': true, 'moonshot-v1-8k-vision-preview': true },
+  },
+  {
+    provider: 'minimax',
+    body: { data: [{ id: 'MiniMax-M2.5', type: 'model' }] },
+    expected: { 'MiniMax-M2.5': true },
+  },
+  {
+    provider: 'baseten',
+    body: { data: [{ id: 'moonshotai/Kimi-K2.5' }, { id: 'deepseek-ai/DeepSeek-V3.1' }] },
+    expected: { 'moonshotai/Kimi-K2.5': true, 'deepseek-ai/DeepSeek-V3.1': true },
+  },
+  {
+    provider: 'zai',
+    body: { data: [{ id: 'glm-4.7' }, { id: 'glm-4.5v' }, { id: 'cogview-4' }] },
+    expected: { 'glm-4.7': true, 'glm-4.5v': true, 'cogview-4': false },
+  },
+] as const)(
+  '$provider discovery marks the models that call tools',
+  async ({ provider, body, expected }) => {
+    const { manager } = await fixture(async () => Response.json(body));
+    const found = await manager.discover({ provider, name: provider, apiKey: 'key' });
+    const { models } = desktopRoutes['/connections/discover'].output.parse(found);
+    expect(Object.fromEntries(models.map((m) => [m.id, m.supportsTools]))).toEqual(expected);
+  },
+);
+
+// Discovery offers only models marked as calling tools, so a provider with no
+// answer shows an empty catalog. These read the answer from each model's metadata.
+const metadataProviders = new Set(['gateway', 'openrouter', 'mistral', 'cohere', 'fireworks']);
+test.each(providerDefinitions.filter(({ id }) => !metadataProviders.has(id)))(
+  '$name discovery offers its example model',
+  async ({ id: provider, example }) => {
+    const { manager } = await fixture(async () => Response.json({ data: [{ id: example }] }));
+    const found = await manager.discover({
+      provider,
+      name: provider,
+      apiKey: 'key',
+      baseURL: provider === 'compatible' ? 'http://localhost:1234/v1' : undefined,
+    });
+    expect(found.models).toEqual([expect.objectContaining({ id: example, supportsTools: true })]);
+  },
+);
+
+test('deepseek discovery through a custom endpoint makes no claim about tools', async () => {
+  const { manager } = await fixture(async () => Response.json({ data: [{ id: 'deepseek-chat' }] }));
+  const found = await manager.discover({
+    provider: 'deepseek',
+    name: 'DeepSeek proxy',
+    apiKey: 'key',
+    baseURL: 'https://proxy.example.com/v1',
+  });
+  expect(found.models[0]?.supportsTools).toBeUndefined();
+});
+
+test('new connections are named after their provider and models get a known context window', async () => {
+  const { manager } = await fixture();
+  const models = [{ id: 'claude-sonnet-4-5-20250929' }, { id: 'unknown-model' }];
+  const first = await manager.save({ provider: 'anthropic', apiKey: 'key', models });
+  const second = await manager.save({ provider: 'anthropic', apiKey: 'key', models });
+  expect(manager.get(first.id).name).toBe('Claude');
+  expect(manager.get(second.id).name).toBe('Claude 2');
+  expect(manager.get(first.id).models.map((m) => m.contextWindow)).toEqual([200_000, 128_000]);
+  // The same model in two connections is told apart by the connection name.
+  expect((await manager.models()).map((m) => m.displayName)).toEqual([
+    'Claude / claude-sonnet-4-5-20250929',
+    'Claude / unknown-model',
+    'Claude 2 / claude-sonnet-4-5-20250929',
+    'Claude 2 / unknown-model',
+  ]);
+  await manager.remove(second.id);
+  expect((await manager.models()).map((m) => m.displayName)).toEqual([
+    'claude-sonnet-4-5-20250929',
+    'unknown-model',
+  ]);
+  await manager.save({ id: first.id, provider: 'anthropic', models });
+  expect(manager.get(first.id).name).toBe('Claude');
+  await manager.save({ id: first.id, provider: 'anthropic', name: 'Work', models });
+  expect(manager.get(first.id).name).toBe('Work');
+});
 
 test('validates endpoints, credentials, unique model IDs and context capacity', async () => {
   const { manager } = await fixture();
@@ -169,9 +473,6 @@ test('validates endpoints, credentials, unique model IDs and context capacity', 
     await expect(manager.save({ ...setup, baseURL })).rejects.toThrow();
   }
   await expect(manager.save({ ...setup, apiKey: '' })).rejects.toThrow('API key');
-  await expect(manager.save({ ...setup, models: [{ id: 'unknown' }] })).rejects.toThrow(
-    'context window',
-  );
   await expect(
     manager.save({ ...setup, models: [setup.models[0], setup.models[0]] }),
   ).rejects.toThrow('unique');

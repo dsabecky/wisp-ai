@@ -219,7 +219,7 @@ it("does not reparse syntax for item data, references, resize or completion", fu
     env.GetItemIcon = function()
         return "LoadedIcon"
     end
-    ns.itemRevision = ns.itemRevision + 1
+    ns.UI.MessageFormat.MarkItemLoaded(100)
     original.streaming, chat.status = false, "done"
     ns.UI.RenderMessageRow(row, chat, original, 600, true)
     assert.is_truthy(widget.tableRows[2].cells[1]:GetText():find("|TLoadedIcon:", 1, true))
@@ -533,4 +533,13 @@ it("uses current metadata with a cached view and preserves user native links", f
     assert.equal(link, row.text:GetText())
     assert.is_false(tableWidget:IsShown())
     assert.is_false(row.rich.widgets.action:IsShown())
+end)
+
+it("keeps Inter for a Latin user message that contains an emoji", function()
+    local env, ns = setup()
+    local chat = { id = "chat", status = "done", messages = {} }
+    local row = ns.UI.MakeMessageRow(env.CreateFrame("Frame"))
+    ns.UI.RenderMessageRow(row, chat, { role = "user", text = "Hola 😀 qué tal" }, 600, true)
+    assert.truthy(row.text:GetText():find("|TInterface\\AddOns\\WispAI\\Textures\\Emoji", 1, true))
+    assert.equal("Interface\\AddOns\\WispAI\\Fonts\\Inter-Medium.ttf", row.text.fontPath)
 end)

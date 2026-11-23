@@ -134,6 +134,9 @@ export const toolDescriptions: Record<string, [string, string]> = {
   ],
   inspect_trainer: ['Inspect trainer', 'Read offers from the trainer window currently open.'],
   compare_items: ['Compare equipment', 'Compare item stats with current equipment.'],
+  search_armor: ['Search armor', 'List armor and jewelry for a slot that fits your level.'],
+  item_sources: ['Find item sources', 'Read where items come from and their last auction price.'],
+  search_weapons: ['Search weapons', 'List weapons, shields and off-hands that fit your level.'],
   query_resources: ['Read resources', 'Read money, bag contents, free space and skill ranks.'],
   inspect_auctions: [
     'Read auction results',
@@ -146,6 +149,10 @@ export const toolDescriptions: Record<string, [string, string]> = {
   inspect_flight_paths: [
     'Read flight paths',
     'Find flight points on the world map and read routes from the flight master maps your character has opened.',
+  ],
+  query_dungeons: [
+    'Dungeon journal',
+    'Read Forever dungeons, their level ranges and entrances from the game.',
   ],
   inspect_map: ['Read maps', 'Look up maps and read your current map pin.'],
   inspect_hearthstone: ['Read Hearthstone bind', 'Read where your Hearthstone takes you.'],

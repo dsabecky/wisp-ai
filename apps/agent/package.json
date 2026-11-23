@@ -1,6 +1,6 @@
 {
   "name": "@wisp/agent",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "license": "GPL-3.0-only",
   "files": [
@@ -18,13 +18,16 @@
     "./capabilities": "./src/capabilities.ts",
     "./providers": "./dist/providers.js",
     "./connection-model": "./src/connection-model.ts",
-    "./reasoning": "./dist/reasoning.js"
+    "./reasoning": "./dist/reasoning.js",
+    "./tool-support": "./dist/tool-support.js",
+    "./context-windows": "./dist/context-windows.js"
   },
   "scripts": {
     "dev": "eve dev",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "test": "cd ../.. && vitest run --config apps/agent/vitest.config.ts"
+    "test": "cd ../.. && vitest run --config apps/agent/vitest.config.ts",
+    "eval": "eve eval"
   },
   "dependencies": {
     "@ai-sdk/alibaba": "2.0.85",

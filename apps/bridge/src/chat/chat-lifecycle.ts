@@ -57,7 +57,21 @@ export function promoteChat(chat: Chat) {
 export function settleTurn(chat: Chat, status: Exclude<ChatStatus, 'idle' | 'working'>) {
   chat.status = status;
   chat.lastActivityAt = Date.now();
+  cancelRunningCalls(chat);
   if (chat.usage) {
     chat.usage.compacting = false;
+  }
+}
+/** A turn that stops mid-call never settles that call; don't leave it running. */
+export function cancelRunningCalls(chat: Pick<Chat, 'activity' | 'messages'>) {
+  for (const call of chat.activity) {
+    if (call.status === 'running') {
+      call.status = 'cancelled';
+    }
+  }
+  for (const message of chat.messages) {
+    if (message.tool?.status === 'running') {
+      message.tool.status = 'cancelled';
+    }
   }
 }

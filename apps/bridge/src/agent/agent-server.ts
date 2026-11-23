@@ -31,6 +31,8 @@ import type { WowheadSearch } from '../integrations/search/web-search.ts';
 import type { UsageTelemetry } from '../telemetry.ts';
 import { chooseChatModel } from '../chat/chat-model.ts';
 import { readLoadedItems, retriesItemLoading } from '../addon/item-loading.ts';
+import { searchGear } from '../integrations/gear-search.ts';
+import { itemSources } from '../integrations/item-sources.ts';
 import { characterIdentity, conversationTitle, queryCharacterSections } from '../chat/context.ts';
 export interface MemoryView {
   entries?: unknown[];
@@ -94,11 +96,15 @@ const inspectionTools = {
   target: 'inspect_target',
   trainer: 'inspect_trainer',
   flight_paths: 'inspect_flight_paths',
+  dungeons: 'query_dungeons',
   training: 'query_training',
   chat: 'read_chat',
   combat: 'read_combat',
   resources: 'query_resources',
   compare_items: 'compare_items',
+  search_armor: 'search_armor',
+  search_weapons: 'search_weapons',
+  item_sources: 'item_sources',
   auctions: 'inspect_auctions',
   macros: 'inspect_macros',
   map: 'inspect_map',
@@ -484,29 +490,59 @@ export function createAgentApp(deps: AgentDependencies) {
           async (sections) =>
             rpcResponses.state.parse(
               await pending.request(
-                { chat: chat.id, session: currentTransport(), sections },
+                { chat: chat.id, session: currentTransport(), sections, agent: true },
                 abort,
               ),
             ),
           stateRequest.refresh,
         );
       }
-      const read = () =>
+      const request = (gameInspection = inspection as unknown) =>
         pending.request(
           {
             chat: chat.id,
             session: currentTransport(),
+            agent: true,
             ...(action
               ? {
                   action: { ...action, expectedCharacter: expectedCharacter(chat.characterKey) },
                 }
-              : inspection
-                ? { inspection }
+              : gameInspection
+                ? { inspection: gameInspection }
                 : {}),
           },
           abort,
         );
-      return inspection && retriesItemLoading(inspection) ? readLoadedItems(read, abort) : read();
+      if (inspection?.kind === 'search_armor' || inspection?.kind === 'search_weapons') {
+        if (
+          !capabilitySettings.enabled('mcp:everloot') ||
+          !capabilitySettings.enabled('mcp_tool:everloot:item_categories')
+        ) {
+          throw new Error(
+            'Gear search needs the Everloot integration and its item categories tool, which are off in Settings',
+          );
+        }
+        return searchGear(
+          inspection,
+          (candidates) => readLoadedItems(() => request(candidates), abort),
+          { signal: abort },
+        );
+      }
+      if (inspection?.kind === 'item_sources') {
+        return itemSources(inspection.args.itemIds, (names) => request(names), {
+          everloot:
+            capabilitySettings.enabled('mcp:everloot') &&
+            capabilitySettings.enabled('mcp_tool:everloot:entity_relations'),
+          questie: capabilitySettings.enabled('integration:questie'),
+          auctionator:
+            capabilitySettings.enabled('integration:auctionator') &&
+            capabilitySettings.enabled('tool:get_item_prices'),
+          signal: abort,
+        });
+      }
+      return inspection && retriesItemLoading(inspection)
+        ? readLoadedItems(() => request(), abort)
+        : request();
     });
   game('/state');
   game('/inspect');

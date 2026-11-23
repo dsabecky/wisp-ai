@@ -337,6 +337,21 @@ local equipmentSlots = {
     INVTYPE_RELIC = { 18 },
     INVTYPE_TABARD = { 19 },
 }
+local function statDelta(candidate, equipped)
+    if not candidate or not equipped then
+        return nil
+    end
+    local delta = {}
+    for key, value in pairs(candidate) do
+        delta[key] = value - (equipped[key] or 0)
+    end
+    for key, value in pairs(equipped) do
+        if not candidate[key] then
+            delta[key] = -value
+        end
+    end
+    return delta
+end
 function inspectors.compare_items(args)
     local candidates = {}
     for _, id in ipairs(args.itemIds) do
@@ -347,18 +362,7 @@ function inspectors.compare_items(args)
         do
             local equippedID = GetInventoryItemID("player", slot)
             local equipped = equippedID and itemDetails(equippedID)
-            local delta
-            if item.stats and equipped and equipped.stats then
-                delta = {}
-                for key, value in pairs(item.stats) do
-                    delta[key] = value - (equipped.stats[key] or 0)
-                end
-                for key, value in pairs(equipped.stats) do
-                    if not item.stats[key] then
-                        delta[key] = -value
-                    end
-                end
-            end
+            local delta = item.stats and equipped and statDelta(item.stats, equipped.stats)
             comparisons[#comparisons + 1] =
                 { slot = slot, equipped = equipped, empty = not equippedID, statDelta = delta }
         end
@@ -367,6 +371,114 @@ function inspectors.compare_items(args)
     return {
         candidates = candidates,
         note = "Raw per-slot stat differences only. No DPS simulation, weights, set/proc valuation or combined two-hand/off-hand replacement calculation.",
+    }
+end
+
+-- Reads many candidate IDs at once (for example a category listing) and keeps
+-- the wearable-by-level ones, each compared with its weakest matching slot.
+local function itemSummary(id)
+    local name, link, quality, itemLevel, requiredLevel, _, _, _, equipLocation =
+        C_Item.GetItemInfo(id)
+    if not name then
+        if C_Item.RequestLoadItemDataByID then
+            C_Item.RequestLoadItemDataByID(id)
+        end
+        return nil
+    end
+    return {
+        id = id,
+        name = name,
+        link = link,
+        quality = quality,
+        itemLevel = itemLevel,
+        requiredLevel = requiredLevel,
+        equipLocation = equipLocation,
+        stats = C_Item.GetItemStats and C_Item.GetItemStats(link) or nil,
+    }
+end
+-- An occupied slot whose item is not cached yet is unknown, not empty: the
+-- comparison waits for it instead of treating it as item level zero.
+local function weakestSlot(slots)
+    local best, uncached
+    for _, slot in ipairs(slots) do
+        local equippedID = GetInventoryItemID("player", slot)
+        local equipped = equippedID and itemSummary(equippedID)
+        if equippedID and not equipped then
+            uncached = uncached or equippedID
+        else
+            local level = equipped and equipped.itemLevel or 0
+            if not best or not equippedID or level < best.level then
+                best = { slot = slot, equipped = equipped, empty = not equippedID, level = level }
+                if not equippedID then
+                    break
+                end
+            end
+        end
+    end
+    if uncached and not (best and best.empty) then
+        return nil, uncached
+    end
+    return best
+end
+-- Bridge-only: the bridge lists catalog IDs for gear searches and the agent
+-- chooses among every match, so nothing is cut here.
+function inspectors.gear_candidates(args)
+    assert(C_Item and C_Item.GetItemInfo, "Item API is unavailable")
+    local maxLevel = args.maxRequiredLevel or UnitLevel("player")
+    local minLevel = args.minRequiredLevel or 0
+    local ranked, loadingIds, equippedLoading = {}, {}, {}
+    local counts =
+        { requested = #args.itemIds, tooHighLevel = 0, tooLowLevel = 0, notEquipment = 0 }
+    for _, id in ipairs(args.itemIds) do
+        local item = itemSummary(id)
+        local slots = item and equipmentSlots[item.equipLocation]
+        if not item then
+            loadingIds[#loadingIds + 1] = id
+        elseif not slots then
+            counts.notEquipment = counts.notEquipment + 1
+        elseif (item.requiredLevel or 0) > maxLevel then
+            counts.tooHighLevel = counts.tooHighLevel + 1
+        elseif (item.requiredLevel or 0) < minLevel then
+            counts.tooLowLevel = counts.tooLowLevel + 1
+        else
+            local target, uncachedID = weakestSlot(slots)
+            item.link = nil
+            if target then
+                local equipped = target.equipped
+                item.slot = target.slot
+                item.emptySlot = target.empty
+                item.equipped = equipped
+                    and { id = equipped.id, name = equipped.name, itemLevel = equipped.itemLevel }
+                item.itemLevelGain = (item.itemLevel or 0) - target.level
+                -- Only a genuinely empty slot compares against no stats; unread
+                -- equipped stats leave the difference unknown, not inflated.
+                local baseline = target.empty and {} or (equipped and equipped.stats)
+                item.statDelta = item.stats and baseline and statDelta(item.stats, baseline) or nil
+            else
+                item.equipped = { id = uncachedID, status = "loading" }
+                equippedLoading[uncachedID] = true
+            end
+            ranked[#ranked + 1] = item
+        end
+    end
+    table.sort(ranked, function(a, b)
+        local gainA, gainB = a.itemLevelGain or -math.huge, b.itemLevelGain or -math.huge
+        if gainA ~= gainB then
+            return gainA > gainB
+        end
+        return a.id < b.id
+    end)
+    counts.matching = #ranked
+    for id in pairs(equippedLoading) do
+        loadingIds[#loadingIds + 1] = id
+    end
+    table.sort(loadingIds)
+    return {
+        status = #loadingIds > 0 and "loading" or "available",
+        items = ranked,
+        counts = counts,
+        loadingIds = #loadingIds > 0 and loadingIds or nil,
+        note = "Every match, ordered by item level gain over the weakest matching equipped slot; the order is not a recommendation or stat weighting. Armor/weapon proficiency is not checked. loadingIds were not in the client cache yet.",
     }
 end
 function inspectors.auctions(args)
@@ -476,6 +588,9 @@ end
 inspectors.chat = function(args)
     return ns.ChatHistory.ReadChatHistory(args)
 end
+inspectors.dungeons = function(args)
+    return ns.Character.ReadDungeons(args)
+end
 inspectors.combat = function(args)
     return ns.Combat.Read(args)
 end
@@ -514,6 +629,7 @@ function ns.Character.Inspect(inspection)
         capturedAt = time(),
         character = UnitName("player"),
         source = inspection.kind == "flight_paths" and "WoW flight maps"
+            or (inspection.kind == "dungeons" and "WoW group finder and Wisp dungeon entrance table")
             or (inspection.kind == "training" and "Bundled What's Training? Forever catalog")
             or "WoW addon live API",
         status = ok and "available" or "unavailable",
