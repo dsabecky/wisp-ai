@@ -54,7 +54,7 @@ test('connections persist metadata separately from secrets and work without Chat
   await manager.prepare(slug);
   expect(chatgpt.accessToken).not.toHaveBeenCalled();
   expect(await manager.models()).toEqual([
-    { slug, displayName: 'Claude / claude-test', efforts: [], contextWindow: 200000 },
+    { slug, displayName: 'claude-test', efforts: [], contextWindow: 200000 },
   ]);
   const restored = new ModelConnections(file, vault, chatgpt as unknown as ChatGPTAuth);
   await restored.load();
@@ -169,7 +169,8 @@ test.each(['openrouter', 'gateway', 'compatible'] as const)(
       ['lab/tagged', provider === 'openrouter' ? undefined : true],
     ]);
     expect(models[0]).toMatchObject({ name: 'Tools', contextWindow: 32000 });
-    expect(models[2]?.contextWindow).toBeUndefined();
+    // Unsized models get the conservative fallback instead of asking the player.
+    expect(models[2]?.contextWindow).toBe(provider === 'compatible' ? 32_768 : 128_000);
     const { id } = await manager.save({
       provider,
       name: 'Models',
@@ -435,6 +436,32 @@ test('deepseek discovery through a custom endpoint makes no claim about tools', 
   expect(found.models[0]?.supportsTools).toBeUndefined();
 });
 
+test('new connections are named after their provider and models get a known context window', async () => {
+  const { manager } = await fixture();
+  const models = [{ id: 'claude-sonnet-4-5-20250929' }, { id: 'unknown-model' }];
+  const first = await manager.save({ provider: 'anthropic', apiKey: 'key', models });
+  const second = await manager.save({ provider: 'anthropic', apiKey: 'key', models });
+  expect(manager.get(first.id).name).toBe('Claude');
+  expect(manager.get(second.id).name).toBe('Claude 2');
+  expect(manager.get(first.id).models.map((m) => m.contextWindow)).toEqual([200_000, 128_000]);
+  // The same model in two connections is told apart by the connection name.
+  expect((await manager.models()).map((m) => m.displayName)).toEqual([
+    'Claude / claude-sonnet-4-5-20250929',
+    'Claude / unknown-model',
+    'Claude 2 / claude-sonnet-4-5-20250929',
+    'Claude 2 / unknown-model',
+  ]);
+  await manager.remove(second.id);
+  expect((await manager.models()).map((m) => m.displayName)).toEqual([
+    'claude-sonnet-4-5-20250929',
+    'unknown-model',
+  ]);
+  await manager.save({ id: first.id, provider: 'anthropic', models });
+  expect(manager.get(first.id).name).toBe('Claude');
+  await manager.save({ id: first.id, provider: 'anthropic', name: 'Work', models });
+  expect(manager.get(first.id).name).toBe('Work');
+});
+
 test('validates endpoints, credentials, unique model IDs and context capacity', async () => {
   const { manager } = await fixture();
   for (const baseURL of [
@@ -446,9 +473,6 @@ test('validates endpoints, credentials, unique model IDs and context capacity', 
     await expect(manager.save({ ...setup, baseURL })).rejects.toThrow();
   }
   await expect(manager.save({ ...setup, apiKey: '' })).rejects.toThrow('API key');
-  await expect(manager.save({ ...setup, models: [{ id: 'unknown' }] })).rejects.toThrow(
-    'context window',
-  );
   await expect(
     manager.save({ ...setup, models: [setup.models[0], setup.models[0]] }),
   ).rejects.toThrow('unique');

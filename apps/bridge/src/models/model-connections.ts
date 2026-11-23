@@ -17,6 +17,7 @@ import {
 import { createProviderModel } from '@wisp/agent/providers';
 import { modelReasoningEfforts } from '@wisp/agent/reasoning';
 import { modelToolSupport } from '@wisp/agent/tool-support';
+import { modelContextWindow } from '@wisp/agent/context-windows';
 import { normalizeModelError, safeErrorMessage } from '@wisp/protocol/model-errors';
 import type { ChatGPTAuth } from '../auth/chatgpt-auth.ts';
 import { readCompletedResponse } from './response-stream.ts';
@@ -191,11 +192,6 @@ export class ModelConnections implements ModelCatalog {
       throw Error('Create a new connection to change provider.');
     }
     this.baseURL(input);
-    if (input.models.some((m) => !m.contextWindow)) {
-      throw Error(
-        'Set the context window in tokens for each model so Wisp can compact conversations correctly.',
-      );
-    }
     if (new Set(input.models.map((m) => m.id)).size !== input.models.length) {
       throw Error('Model IDs must be unique.');
     }
@@ -204,8 +200,10 @@ export class ModelConnections implements ModelCatalog {
     const config = connectionConfig.parse({
       ...input,
       id,
+      name: input.name ?? (input.id ? this.get(input.id).name : this.defaultName(input.provider)),
       models: input.models.map((m) => ({
         ...m,
+        contextWindow: m.contextWindow ?? modelContextWindow(input.provider, m.id),
         reasoningEfforts: m.reasoningEfforts ?? modelReasoningEfforts(input.provider, m.id),
       })),
     });
@@ -226,6 +224,25 @@ export class ModelConnections implements ModelCatalog {
     }
     return { id };
   }
+  /**
+   * The provider's short name ("Anthropic / Claude" → "Claude"), numbered when
+   * another connection already uses it.
+   */
+  private defaultName(provider: ProviderId) {
+    const base =
+      provider === 'openai'
+        ? 'OpenAI'
+        : providerDefinitions
+            .find((p) => p.id === provider)!
+            .name.split(' / ')
+            .at(-1)!;
+    const taken = new Set(this.connections.map((c) => c.name));
+    let name: string = base;
+    for (let n = 2; taken.has(name); n++) {
+      name = `${base} ${n}`;
+    }
+    return name;
+  }
   async remove(id: string) {
     this.get(id);
     const previous = await this.vault.read(this.key(id));
@@ -241,7 +258,7 @@ export class ModelConnections implements ModelCatalog {
     this.keys.delete(id);
   }
   async models(): Promise<AccountModel[]> {
-    const configured: AccountModel[] = this.connections
+    const configured = this.connections
       .filter((c) => this.keys.has(c.id) || c.provider === 'compatible')
       .flatMap((c) =>
         c.models.map((m) => {
@@ -250,24 +267,42 @@ export class ModelConnections implements ModelCatalog {
               ? m.reasoningEfforts
               : modelReasoningEfforts(c.provider, m.id);
           return {
-            slug: connectionModelSlug(c.id, m.id),
-            displayName: `${c.name} / ${m.name || m.id}`,
-            efforts: supported.length ? ['provider-default', ...supported] : [],
-            ...(supported.length ? { defaultEffort: 'provider-default' } : {}),
-            contextWindow: m.contextWindow,
+            connection: c.name,
+            model: {
+              slug: connectionModelSlug(c.id, m.id),
+              displayName: m.name || m.id,
+              efforts: supported.length ? ['provider-default', ...supported] : [],
+              ...(supported.length ? { defaultEffort: 'provider-default' } : {}),
+              contextWindow: m.contextWindow,
+            } satisfies AccountModel,
           };
         }),
       );
+    const account: AccountModel[] = [];
     if (this.chatgpt.state().status === 'connected') {
       try {
-        configured.unshift(...(await this.chatgpt.models()));
+        account.push(...(await this.chatgpt.models()));
       } catch (error) {
         if (!configured.length) {
           throw error;
         }
       }
     }
-    return configured;
+    // Model names already say what they are ("Claude Opus 5.5"), so the
+    // connection only prefixes a name that two sources share.
+    const key = (name: string) => name.trim().toLowerCase();
+    const counts = new Map<string, number>();
+    for (const { displayName } of [...account, ...configured.map(({ model }) => model)]) {
+      counts.set(key(displayName), (counts.get(key(displayName)) ?? 0) + 1);
+    }
+    return [
+      ...account,
+      ...configured.map(({ connection, model }) =>
+        counts.get(key(model.displayName))! > 1
+          ? { ...model, displayName: `${connection} / ${model.displayName}` }
+          : model,
+      ),
+    ];
   }
   async prepare(model: string) {
     const parsed = parseConnectionModel(model);
@@ -390,7 +425,9 @@ export class ModelConnections implements ModelCatalog {
             (name): name is string =>
               typeof name === 'string' && name.trim().length > 0 && name.trim().length <= 200,
           ) ?? id,
-        contextWindow: discoveredConnectionModel.shape.contextWindow.safeParse(context).data,
+        contextWindow:
+          discoveredConnectionModel.shape.contextWindow.safeParse(context).data ??
+          modelContextWindow(input.provider, id),
         reasoningEfforts: metadataEfforts?.length
           ? metadataEfforts
           : modelReasoningEfforts(input.provider, id),
