@@ -468,3 +468,146 @@ test('a model-catalog outage leaves the Grok session connected', async () => {
   await expect(auth.models()).rejects.toThrow('Could not load models');
   expect(auth.state().status).toBe('connected');
 });
+
+test('a refresh write cannot replace a sign-in that commits while it is in flight', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  const write = secrets.write.bind(secrets);
+  let release = () => {};
+  let entered = () => {};
+  const writing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  secrets.write = async (key, value) => {
+    if (value.includes('renewed-refresh')) {
+      entered();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    }
+    await write(key, value);
+  };
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    sleep: async () => {},
+    fetch: async (input, init) => {
+      const url = String(input);
+      const body = String(init?.body || '');
+      if (url.endsWith('/device/code')) {
+        return Response.json({
+          device_code: 'device-private',
+          user_code: 'WISP-CODE',
+          verification_uri: 'https://auth.x.ai/device',
+          interval: 1,
+          expires_in: 600,
+        });
+      }
+      if (body.includes('grant_type=refresh_token')) {
+        return Response.json({
+          access_token: 'renewed-access',
+          refresh_token: 'renewed-refresh',
+          expires_in: 900,
+          scope: 'grok-cli:access',
+        });
+      }
+      return Response.json({
+        access_token: jwt({ sub: 'user-2', email: 'bob@example.com' }),
+        refresh_token: 'refresh-private',
+        expires_in: 900,
+        scope: 'openid grok-cli:access',
+      });
+    },
+  });
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: now,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  await auth.load();
+  const refreshing = auth.accessToken();
+  await writing;
+  const signingIn = auth.beginSignIn();
+  await signingIn;
+  for (let step = 0; step < 8; step += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  release();
+  await expect(refreshing).resolves.toBe('renewed-access');
+  await vi.waitFor(() => expect(auth.state().account).toBe('bob@example.com'));
+  expect(auth.state().status).toBe('connected');
+  const saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).toContain('refresh-private');
+  expect(saved).toContain('bob@example.com');
+  expect(saved).not.toContain('renewed-refresh');
+  expect(saved).not.toContain('"frozen":true');
+});
+
+test('a rejection write cannot restore tokens after disconnect', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  const write = secrets.write.bind(secrets);
+  let release = () => {};
+  let entered = () => {};
+  const writing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  secrets.write = async (key, value) => {
+    if (value.includes('"frozen":true')) {
+      entered();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    }
+    await write(key, value);
+  };
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    fetch: async () => new Response(null, { status: 200 }),
+  });
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: now + 120_000,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  await auth.load();
+  const rejecting = auth.rejectSession('old-access');
+  await writing;
+  const disconnecting = auth.disconnect();
+  for (let step = 0; step < 8; step += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  release();
+  await rejecting;
+  const state = await disconnecting;
+  expect(state.status).toBe('signed_out');
+  const saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).not.toContain('old-refresh');
+  expect(saved).not.toContain('old-access');
+  expect(saved).not.toContain('"frozen":true');
+});

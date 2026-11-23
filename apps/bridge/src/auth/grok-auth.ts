@@ -84,6 +84,9 @@ export class GrokAuth {
   private refreshes = new Map<string, Promise<string>>();
   private pollTask?: Promise<void>;
   private modelsCache?: { id: string; models: { id: string; name: string }[]; at: number };
+  // NativeVault runs one helper per write and does not order them. Account
+  // transitions share this queue so an older snapshot cannot land last.
+  private vaultQueue: Promise<void> = Promise.resolve();
   constructor(
     vault: SecretVault,
     options: {
@@ -116,7 +119,15 @@ export class GrokAuth {
       this.saved = savedSchema.parse(JSON.parse(raw));
     }
   }
-  private async persist(next: Saved = this.saved) {
+  private exclusive<T>(action: () => Promise<T>): Promise<T> {
+    const result = this.vaultQueue.then(action, action);
+    this.vaultQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+  private async writeSaved(next: Saved) {
     await this.vault.write('grok:accounts', JSON.stringify(next));
     this.saved = next;
     this.revision++;
@@ -124,6 +135,15 @@ export class GrokAuth {
   }
   private current() {
     return this.saved.profiles.find((profile) => profile.id === this.saved.activeId);
+  }
+  private sameSession(id: string, tokens: { accessToken: string; refreshToken: string }) {
+    const profile = this.saved.profiles.find((entry) => entry.id === id);
+    return (
+      !!profile?.tokens &&
+      !profile.frozen &&
+      profile.tokens.accessToken === tokens.accessToken &&
+      profile.tokens.refreshToken === tokens.refreshToken
+    );
   }
   state() {
     const profile = this.current();
@@ -366,18 +386,15 @@ export class GrokAuth {
     };
     const previous = structuredClone(this.saved);
     const next: Saved = { activeId: profile.id, profiles: [profile] };
-    // Publish the new account only after the vault accepts it. A rejected write
-    // leaves the previous session in memory and on disk.
-    try {
-      await this.persist(next);
-    } catch (error) {
-      this.saved = previous;
-      throw error;
-    }
-    if (signal.aborted) {
-      await this.persist(previous);
-      throw new GrokAuthError('Sign-in cancelled.');
-    }
+    // Publish the new account only after the vault accepts it, and roll it
+    // back in the same turn so a queued refresh cannot land between the two.
+    await this.exclusive(async () => {
+      await this.writeSaved(next);
+      if (signal.aborted) {
+        await this.writeSaved(previous);
+        throw new GrokAuthError('Sign-in cancelled.');
+      }
+    });
   }
   async accessToken(rejectedToken?: string) {
     if (this.signingOut) {
@@ -405,6 +422,7 @@ export class GrokAuth {
       return previous;
     }
     const work = (async () => {
+      let superseded = false;
       try {
         const response = await this.fetcher(ISSUER + '/oauth2/token', {
           method: 'POST',
@@ -421,19 +439,52 @@ export class GrokAuth {
           throw new GrokAuthError('The Grok session needs a new sign-in.');
         }
         const renewed = this.tokens((await response.json()) as Record<string, unknown>, tokens);
-        profile.tokens = {
-          accessToken: renewed.accessToken,
-          refreshToken: renewed.refreshToken,
-          expiresAt: renewed.expiresAt,
-          scopes: renewed.scopes,
-        };
-        profile.frozen = false;
-        await this.persist();
+        const stored = await this.exclusive(async () => {
+          if (!this.sameSession(profile.id, tokens)) {
+            return false;
+          }
+          const next = structuredClone(this.saved);
+          const target = next.profiles.find((entry) => entry.id === profile.id);
+          if (!target) {
+            return false;
+          }
+          target.tokens = {
+            accessToken: renewed.accessToken,
+            refreshToken: renewed.refreshToken,
+            expiresAt: renewed.expiresAt,
+            scopes: renewed.scopes,
+          };
+          target.frozen = false;
+          await this.writeSaved(next);
+          return true;
+        });
+        if (!stored) {
+          superseded = true;
+          throw new GrokAuthError('The Grok session changed. Retry.');
+        }
         return renewed.accessToken;
       } catch (error) {
-        profile.frozen = true;
-        this.message = 'Grok needs a new sign-in. The previous refresh token will not be retried.';
-        await this.persist();
+        if (superseded) {
+          throw error;
+        }
+        const frozen = await this.exclusive(async () => {
+          if (!this.sameSession(profile.id, tokens)) {
+            return false;
+          }
+          const next = structuredClone(this.saved);
+          const target = next.profiles.find((entry) => entry.id === profile.id);
+          if (!target?.tokens) {
+            return false;
+          }
+          target.frozen = true;
+          await this.writeSaved(next);
+          this.message =
+            'Grok needs a new sign-in. The previous refresh token will not be retried.';
+          return true;
+        });
+        if (!frozen) {
+          throw new GrokAuthError('The Grok session changed. Retry.');
+        }
         throw error instanceof GrokAuthError ? error : new GrokAuthError(this.message);
       } finally {
         this.refreshes.delete(profile.id);
@@ -448,13 +499,20 @@ export class GrokAuth {
    * stored a different session, so only the rejected token is frozen.
    */
   async rejectSession(rejectedToken: string) {
-    const profile = this.current();
-    if (!profile?.tokens || profile.frozen || profile.tokens.accessToken !== rejectedToken) {
-      return;
-    }
-    profile.frozen = true;
-    this.message = 'Grok rejected this session. Please sign in again.';
-    await this.persist();
+    await this.exclusive(async () => {
+      const profile = this.current();
+      if (!profile?.tokens || profile.frozen || profile.tokens.accessToken !== rejectedToken) {
+        return;
+      }
+      const next = structuredClone(this.saved);
+      const target = next.profiles.find((entry) => entry.id === profile.id);
+      if (!target?.tokens || target.tokens.accessToken !== rejectedToken) {
+        return;
+      }
+      target.frozen = true;
+      await this.writeSaved(next);
+      this.message = 'Grok rejected this session. Please sign in again.';
+    });
   }
   async disconnect() {
     await this.cancel(false);
@@ -464,7 +522,8 @@ export class GrokAuth {
     try {
       if (profile) {
         await this.refreshes.get(profile.id)?.catch(() => {});
-        const token = profile.tokens?.refreshToken;
+        const live = this.saved.profiles.find((entry) => entry.id === profile.id) || profile;
+        const token = live.tokens?.refreshToken;
         if (token) {
           confirmed = false;
           try {
@@ -485,14 +544,19 @@ export class GrokAuth {
           }
         }
         // Clear tokens only in the copy the vault accepts. A rejected write
-        // keeps the live profile, so Disconnect stays available.
-        const next = structuredClone(this.saved);
-        const cleared = next.profiles.find((entry) => entry.id === profile.id);
-        if (cleared) {
+        // keeps the live profile, so Disconnect stays available. The clear
+        // runs on the queue so an older refresh or rejection cannot restore
+        // the session after this write.
+        await this.exclusive(async () => {
+          const next = structuredClone(this.saved);
+          const cleared = next.profiles.find((entry) => entry.id === profile.id);
+          if (!cleared?.tokens) {
+            return;
+          }
           cleared.tokens = undefined;
           cleared.frozen = false;
-        }
-        await this.persist(next);
+          await this.writeSaved(next);
+        });
       }
       this.message = confirmed
         ? 'Wisp disconnected. Your other apps stay signed in.'
