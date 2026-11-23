@@ -248,8 +248,8 @@ async fn desktop_info(
 ) -> Result<Value, String> {
     let (wow, addon_outdated) = addon_installation(&host).await?;
     let addon_notice = *host.addon_notice.lock().await;
-    let addon_update_pending = cfg!(all(windows, not(debug_assertions)))
-        && host.data.join(addon_update::PENDING_FILE).is_file();
+    let addon_update_pending =
+        addon_update::packaged_desktop() && host.data.join(addon_update::PENDING_FILE).is_file();
     Ok(json!({
         "wow": wow,
         "configured": wow.is_some(),
@@ -268,7 +268,7 @@ async fn auto_update_addon(
     app: tauri::AppHandle,
     host: tauri::State<'_, Host>,
 ) -> Result<Option<Value>, String> {
-    if !cfg!(all(windows, not(debug_assertions))) {
+    if !addon_update::packaged_desktop() {
         return Ok(None);
     }
     let _operation = host.lifecycle.lock().await;
@@ -337,9 +337,7 @@ async fn start_host(host: &Host) -> Result<(), String> {
         .open(host.data.join("runtime/bridge.log"))
         .map_err(|e| e.to_string())?;
     let mut command = host.command("src/main.ts")?;
-    if cfg!(all(windows, not(debug_assertions)))
-        && host.data.join(addon_update::PENDING_FILE).is_file()
-    {
+    if addon_update::packaged_desktop() && host.data.join(addon_update::PENDING_FILE).is_file() {
         command.env("WISP_DEFER_WOW_TRANSPORT", "1");
     }
     command
@@ -617,9 +615,7 @@ async fn run_addon_installer(
 ) -> Result<String, (telemetry::AddonInstallError, String)> {
     use telemetry::AddonInstallError;
 
-    if !Path::new(&wow).join("Wow.exe").is_file()
-        && !Path::new(&wow).join("World of Warcraft.app").exists()
-    {
+    if !game_detection::contains_game_client(Path::new(&wow)) {
         return Err((
             AddonInstallError::InvalidGameFolder,
             "Choose the WoW client folder containing Wow.exe or World of Warcraft.app.".into(),

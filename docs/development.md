@@ -199,7 +199,7 @@ pnpm desktop:dev
 pnpm package:linux
 ```
 
-`desktop:dev` stages a development bridge and opens the Tauri app. `package:linux` writes `dist/WispAI-<version>-linux-<arch>.AppImage` and `dist/WispAI-<version>-linux-<arch>.deb`. The AppImage receives signed in-app updates. The Debian package is installed with the system package manager and does not update itself. Choose the Wine, Proton, Bottles or Lutris folder that contains `Wow.exe`. Wisp looks for Battle.net’s `product.db` in the default Wine prefix, Steam compatibility directories, Bottles and `~/Games`.
+`desktop:dev` stages a development bridge and opens the Tauri app. `package:linux` writes `dist/WispAI-<version>-linux-<arch>.AppImage` and `dist/WispAI-<version>-linux-<arch>.deb`. The AppImage receives signed in-app updates. The Debian package is installed with the system package manager and does not update itself. Choose the Wine, Proton, Bottles or Lutris folder that contains `Wow.exe` or `wow.exe`. Wisp looks for Battle.net’s `product.db` in the default Wine prefix, Steam compatibility directories, Bottles (including the official Flatpak) and `~/Games`, and reads Wine drive letters such as `C:` from that prefix.
 
 Gear comparisons call the pinned Windows `wowsimcli.exe`. Linux packages leave that binary out, so the tool does not run there. Build it on Windows and place it in `simulator/` before `pnpm package:linux` if a package should carry the same executable. The rest of the companion runs on Linux.
 

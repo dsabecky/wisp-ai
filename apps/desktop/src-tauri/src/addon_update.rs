@@ -1,7 +1,13 @@
 use std::{fs, io, path::Path};
 
-// Written by the NSIS post-install hook after a Desktop update completes.
+// Written after a packaged Desktop update: the NSIS hook on Windows, and the
+// AppImage updater just before it replaces itself on Linux.
 pub const PENDING_FILE: &str = "runtime/addon-update-pending";
+
+/// Release builds on Windows and Linux refresh an existing addon after an update.
+pub fn packaged_desktop() -> bool {
+    !cfg!(debug_assertions) && cfg!(any(windows, target_os = "linux"))
+}
 
 #[derive(Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "snake_case")]

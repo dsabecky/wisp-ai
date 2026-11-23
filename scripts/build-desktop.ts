@@ -176,7 +176,9 @@ async function publishBundles(version: string, signed: boolean) {
   const debDestination = `dist/WispAI-${version}-linux-${arch}.deb`;
   await publishOne(appImage, appDestination, signed);
   await chmod(appDestination, 0o755);
-  await publishOne(deb, debDestination, signed);
+  // Tauri signs the AppImage for the updater. The .deb is installed by the
+  // system package manager and has no updater signature.
+  await publishOne(deb, debDestination, false);
   return [appDestination, debDestination];
 }
 
