@@ -979,6 +979,39 @@ test.each(['anthropic', 'google', 'compatible', 'gateway'] as const)(
   },
 );
 
+test('a ChatGPT catalog failure still lists a connected Grok account', async () => {
+  const { manager, chatgpt } = await fixture();
+  chatgpt.state = () => ({ status: 'connected' });
+  chatgpt.models.mockRejectedValue(new Error('ChatGPT catalog down'));
+  Object.assign(manager, {
+    grok: {
+      state: () => ({ status: 'connected' }),
+      models: async () => [{ id: 'grok-4.5', name: 'Grok 4.5' }],
+    },
+  });
+  const slug = connectionModelSlug(GROK_SUBSCRIPTION_ID, 'grok-4.5');
+  expect((await manager.models()).map((model) => model.slug)).toEqual([slug]);
+});
+
+test('account catalog errors surface only when every connected account fails', async () => {
+  const { manager, chatgpt } = await fixture();
+  const { id } = await manager.save(setup);
+  chatgpt.state = () => ({ status: 'connected' });
+  chatgpt.models.mockRejectedValue(new Error('ChatGPT catalog down'));
+  const grok = {
+    state: () => ({ status: 'connected' }),
+    models: async () => {
+      throw new Error('Grok catalog down');
+    },
+  };
+  Object.assign(manager, { grok });
+  expect((await manager.models()).map((model) => model.slug)).toEqual([
+    connectionModelSlug(id, 'claude-test'),
+  ]);
+  await manager.remove(id);
+  await expect(manager.models()).rejects.toThrow('ChatGPT catalog down');
+});
+
 test('a signed-in Grok account is used instead of an API key', async () => {
   const requests: { url: string; headers: Headers; body: Record<string, unknown> }[] = [];
   const { manager } = await fixture(async (url, init) => {

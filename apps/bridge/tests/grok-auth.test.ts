@@ -74,6 +74,81 @@ test('a hostile verification page is rejected before polling', async () => {
   expect(auth.state().status).toBe('signed_out');
 });
 
+test('cancel during the credential write restores the previous account', async () => {
+  const secrets = vault();
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'refresh-old',
+            expiresAt: Date.now() + 60_000,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  const write = secrets.write.bind(secrets);
+  let entered = () => {};
+  let release = () => {};
+  const writing = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  secrets.write = async (key, value) => {
+    if (value.includes('refresh-private')) {
+      entered();
+      await gate;
+    }
+    await write(key, value);
+  };
+  const auth = new GrokAuth(secrets, {
+    sleep: async () => {},
+    fetch: async (input) => {
+      if (String(input).endsWith('/device/code')) {
+        return Response.json({
+          device_code: 'device-private',
+          user_code: 'WISP-CODE',
+          verification_uri: 'https://auth.x.ai/device',
+          interval: 1,
+          expires_in: 600,
+        });
+      }
+      return Response.json({
+        access_token: jwt({ sub: 'user-2', email: 'bob@example.com' }),
+        refresh_token: 'refresh-private',
+        expires_in: 900,
+        scope: 'openid grok-cli:access',
+      });
+    },
+  });
+  await auth.load();
+  await auth.beginSignIn();
+  await writing;
+  let cancelled = false;
+  const cancel = auth.cancel().then(() => {
+    cancelled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(cancelled).toBe(false);
+  release();
+  await cancel;
+  expect(auth.state().status).toBe('connected');
+  expect(auth.state().account).toBe('ada@example.com');
+  expect(auth.state().message).toBe('Sign-in cancelled.');
+  const saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).toContain('refresh-old');
+  expect(saved).not.toContain('refresh-private');
+});
+
 test('cancel stops the poll', async () => {
   const auth = new GrokAuth(vault(), {
     sleep: (_ms, signal) =>

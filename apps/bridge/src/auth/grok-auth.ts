@@ -192,7 +192,7 @@ export class GrokAuth {
       if (attempt.signal.aborted) {
         return;
       }
-      await this.store(tokens);
+      await this.store(tokens, attempt.signal);
       this.message = '';
     } catch (error) {
       if (attempt.signal.aborted) {
@@ -355,7 +355,7 @@ export class GrokAuth {
     const id = /^[A-Za-z0-9_.:@|-]{1,200}$/.test(sub) ? sub : 'grok-account';
     return { id, email: email?.slice(0, 320), name: name?.slice(0, 200) };
   }
-  private async store(tokens: ReturnType<GrokAuth['tokens']>) {
+  private async store(tokens: ReturnType<GrokAuth['tokens']>, signal: AbortSignal) {
     const { identity, ...stored } = tokens;
     const profile = {
       id: identity.id,
@@ -364,8 +364,14 @@ export class GrokAuth {
       tokens: stored,
       frozen: false,
     };
+    const previous = structuredClone(this.saved);
     this.saved = { activeId: profile.id, profiles: [profile] };
     await this.persist();
+    if (signal.aborted) {
+      this.saved = previous;
+      await this.persist();
+      throw new GrokAuthError('Sign-in cancelled.');
+    }
   }
   async accessToken(rejectedToken?: string) {
     if (this.signingOut) {

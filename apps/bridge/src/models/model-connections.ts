@@ -293,23 +293,25 @@ export class ModelConnections implements ModelCatalog {
         }),
       );
     const account: AccountModel[] = [];
+    // Hold a catalog failure until every connected account has been tried.
+    // Otherwise a ChatGPT error hides a healthy Grok account when no API key is saved.
+    const accountErrors: unknown[] = [];
     if (this.chatgpt.state().status === 'connected') {
       try {
         account.push(...(await this.chatgpt.models()));
       } catch (error) {
-        if (!configured.length) {
-          throw error;
-        }
+        accountErrors.push(error);
       }
     }
     if (this.grok?.state().status === 'connected') {
       try {
         account.push(...(await this.grokAccountModels()));
       } catch (error) {
-        if (!configured.length && !account.length) {
-          throw error;
-        }
+        accountErrors.push(error);
       }
+    }
+    if (!configured.length && !account.length && accountErrors.length) {
+      throw accountErrors[0];
     }
     // Model names already say what they are ("Claude Opus 5.5"), so the
     // connection only prefixes a name that two sources share.
