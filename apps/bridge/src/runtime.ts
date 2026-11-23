@@ -54,6 +54,8 @@ import { TheWoWDB } from './integrations/thewowdb.ts';
 import { Simulator } from './integrations/simulation/simulator.ts';
 import { appPaths } from './app-paths.ts';
 import { addonVersionFromToc } from './addon/addon-version.ts';
+import { Features } from './features.ts';
+import { featureChannel } from '@wisp/protocol/features';
 export interface BridgeOptions {
   resourceRoot?: string;
   dataDirectory?: string;
@@ -124,6 +126,12 @@ export async function startBridge(options: BridgeOptions = {}) {
       return { status: 'available', entries: [...preferences, ...character] };
     }
     const config = await loadBridgeConfig(paths.config);
+    const features = await Features.start({
+      channel: featureChannel(bridgeVersion, process.env.WISP_RELEASE_BUILD === '1'),
+      overrides: config.get().features ?? {},
+      saveOverrides: (overrides) => config.update({ features: overrides }),
+      onChange: () => featuresChanged(),
+    });
     const mcpConfig = config.get().mcpConfig;
     const mcpFile = mcpConfig
       ? path.resolve(paths.dataRoot, mcpConfig)
@@ -134,6 +142,7 @@ export async function startBridge(options: BridgeOptions = {}) {
     resources.defer(() => mcpManager.close());
     const telemetry = new UsageTelemetry(paths.dataRoot, bridgeVersion, {
       isCustomMcpConnection: (name) => Object.hasOwn(mcpManager.servers, name.replace(/-/g, '_')),
+      enabledFeatures: () => features.enabledNames(),
     });
     resources.defer(() => telemetry.close());
     const auth = new ChatGPTAuth(runtime, vault);
@@ -160,6 +169,7 @@ export async function startBridge(options: BridgeOptions = {}) {
     const capabilitySettings = new CapabilitySettings(path.join(runtime, 'capabilities.json'));
     await capabilitySettings.load();
     capabilitySettings.agentFile = path.join(runtime, 'agent-capabilities.json');
+    capabilitySettings.features = features.values();
     const integrationState = new IntegrationState(capabilitySettings);
     const simulatorAvailable = existsSync(paths.simulatorExecutable);
     capabilitySettings.availability.set('integration:wowsims', {
@@ -224,6 +234,7 @@ export async function startBridge(options: BridgeOptions = {}) {
             : [],
           routinesAllowed: !!character && capabilitySettings.enabled('tool:manage_routine'),
           capabilities: capabilitySettings.snapshot(),
+          features: features.values(),
           requests: pending.snapshot(),
         };
       },
@@ -280,6 +291,20 @@ export async function startBridge(options: BridgeOptions = {}) {
       if (!shutdownRequested) {
         chatStore.schedule(() => state.chats);
       }
+    }
+    // A saved override changed a flag: the agent reads it on its next turn, the
+    // addon on its next snapshot and the desktop on its next status poll.
+    function featuresChanged() {
+      capabilitySettings.features = features.values();
+      void capabilitySettings
+        .publish()
+        .catch((error) =>
+          logger.warn(
+            { event: 'features.publish_failed', error: errorMessage(error) },
+            'Feature flags could not reach the agent',
+          ),
+        );
+      changed();
     }
     const run = createTurnRunner({
       telemetry,
@@ -437,6 +462,7 @@ export async function startBridge(options: BridgeOptions = {}) {
         routineRuns: routineStore.history({ includeSilent: false, limit: 200 }),
         characters,
         appUpdate: appUpdateVersion,
+        features: features.state(),
       };
     }
     const desktopApp = createDesktopApp({
@@ -465,6 +491,7 @@ export async function startBridge(options: BridgeOptions = {}) {
             await transport.connect(input.wow ?? config.get().wow, input.wow !== undefined);
           }
         }),
+      setFeature: (id, enabled) => features.set(id, enabled),
       setAppUpdate: (version) => {
         appUpdateVersion = version;
       },
@@ -528,7 +555,10 @@ export async function startBridge(options: BridgeOptions = {}) {
       observeGameConnection();
       publisher.retry();
     }, PUBLISH_MIN_INTERVAL_MS);
-    logger.info({ event: 'bridge.started', version: bridgeVersion }, 'Wisp started');
+    logger.info(
+      { event: 'bridge.started', version: bridgeVersion, channel: features.channel },
+      'Wisp started',
+    );
     resources.defer(() => clearInterval(publish));
     function stop() {
       shutdownRequested = true;

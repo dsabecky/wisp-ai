@@ -82,6 +82,11 @@ impl Host {
             .current_dir(&self.payload)
             .env("WISP_DATA_DIR", &self.data)
             .env("WISP_RESOURCE_ROOT", &self.payload)
+            // Debug builds evaluate feature flags as the development channel.
+            .env(
+                "WISP_RELEASE_BUILD",
+                if cfg!(debug_assertions) { "0" } else { "1" },
+            )
             .env(
                 "WISP_TELEMETRY_RELEASE",
                 if telemetry::release_enabled() {
@@ -188,6 +193,7 @@ fn permitted(method: &str, route: &str) -> bool {
                 "/routines/open",
                 "/simulator/character",
                 "/app-update",
+                "/features/set",
             ]
             .contains(&route))
 }
@@ -1209,6 +1215,8 @@ mod tests {
         assert!(permitted("POST", "/grok/disconnect"));
         assert!(!permitted("GET", "/grok/start"));
         assert!(!permitted("GET", "/app-update"));
+        assert!(permitted("POST", "/features/set"));
+        assert!(!permitted("GET", "/features/set"));
         assert!(allowed_sign_in_url(
             "https://auth.openai.com/api/accounts/authorize"
         ));
