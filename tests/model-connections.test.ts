@@ -1012,6 +1012,34 @@ test('account catalog errors surface only when every connected account fails', a
   await expect(manager.models()).rejects.toThrow('ChatGPT catalog down');
 });
 
+test('an empty model uses the Grok account when ChatGPT is signed out', async () => {
+  const { manager, chatgpt } = await fixture();
+  chatgpt.state = () => ({ status: 'signed_out' });
+  const accessToken = vi.fn(async () => 'oauth-token');
+  Object.assign(manager, {
+    grok: {
+      pending: true,
+      state: () => ({ status: 'authorizing' }),
+      accessToken,
+    },
+  });
+  await expect(manager.prepare('')).rejects.toThrow('Finish Grok sign-in first.');
+  expect(chatgpt.accessToken).not.toHaveBeenCalled();
+  expect(accessToken).not.toHaveBeenCalled();
+
+  Object.assign(manager, {
+    grok: {
+      pending: false,
+      state: () => ({ status: 'plan_permission_required' }),
+      accessToken: async () => {
+        throw Error('This Grok account did not grant Wisp access. Sign in again.');
+      },
+    },
+  });
+  await expect(manager.prepare('')).rejects.toThrow('did not grant Wisp access');
+  expect(chatgpt.accessToken).not.toHaveBeenCalled();
+});
+
 test('a signed-in Grok account is used instead of an API key', async () => {
   const requests: { url: string; headers: Headers; body: Record<string, unknown> }[] = [];
   const { manager } = await fixture(async (url, init) => {
@@ -1076,6 +1104,7 @@ test('a second Grok 401 marks the session for reauthentication', async () => {
     'unavailable',
   );
   expect(rejectSession).toHaveBeenCalledTimes(2);
+  expect(rejectSession).toHaveBeenCalledWith('renewed-token');
 
   rejectSession.mockClear();
   let calls = 0;

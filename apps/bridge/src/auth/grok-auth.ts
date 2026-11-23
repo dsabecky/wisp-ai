@@ -436,10 +436,14 @@ export class GrokAuth {
     this.refreshes.set(profile.id, work);
     return work;
   }
-  /** The token endpoint accepted a refresh, but the proxy still rejected the session. */
-  async rejectSession() {
+  /**
+   * The token endpoint accepted a refresh, but the proxy still rejected that
+   * access token. A background request can observe the 401 after Reconnect
+   * stored a different session, so only the rejected token is frozen.
+   */
+  async rejectSession(rejectedToken: string) {
     const profile = this.current();
-    if (!profile || profile.frozen) {
+    if (!profile?.tokens || profile.frozen || profile.tokens.accessToken !== rejectedToken) {
       return;
     }
     profile.frozen = true;
@@ -502,14 +506,15 @@ export class GrokAuth {
     });
     if (response.status === 401) {
       await response.body?.cancel();
-      headers.set('authorization', 'Bearer ' + (await this.accessToken(token)));
+      const renewed = await this.accessToken(token);
+      headers.set('authorization', 'Bearer ' + renewed);
       response = await this.fetcher(GROK_PROXY_BASE + '/models-v2', {
         headers,
         redirect: 'error',
         signal: AbortSignal.timeout(15000),
       });
       if (response.status === 401) {
-        await this.rejectSession();
+        await this.rejectSession(renewed);
       }
     }
     if (!response.ok) {

@@ -332,6 +332,17 @@ export class ModelConnections implements ModelCatalog {
   async prepare(model: string) {
     const parsed = parseConnectionModel(model);
     if (!parsed) {
+      // No slug yet. ChatGPT owns that default, unless it is signed out and
+      // Grok is the account still signing in or waiting on a plan grant.
+      const grok = this.grok;
+      const grokStatus = grok?.state().status;
+      if (this.chatgpt.state().status === 'signed_out' && grok && grokStatus !== 'signed_out') {
+        if (grok.pending || grokStatus === 'authorizing') {
+          throw Error('Finish Grok sign-in first.');
+        }
+        await grok.accessToken();
+        return;
+      }
       if (this.chatgpt.pending) {
         throw Error('Finish ChatGPT sign-in first.');
       }
@@ -773,7 +784,7 @@ export class ModelConnections implements ModelCatalog {
       token = await this.grok.accessToken(token);
       response = await send(token);
       if (response.status === 401) {
-        await this.grok.rejectSession();
+        await this.grok.rejectSession(token);
       }
     }
     if (!response.ok) {
@@ -834,7 +845,7 @@ export class ModelConnections implements ModelCatalog {
       token = await this.grok.accessToken(token);
       response = await send(token);
       if (response.status === 401) {
-        await this.grok.rejectSession();
+        await this.grok.rejectSession(token);
       }
     }
     if (!response.ok) {

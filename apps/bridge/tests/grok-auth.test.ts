@@ -256,6 +256,71 @@ test('a second model-catalog 401 requires a new sign-in', async () => {
   await expect(auth.accessToken()).rejects.toThrow('Sign in with Grok');
 });
 
+test('a stale catalog 401 does not freeze the session stored by reconnect', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  let models = 0;
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    fetch: async (input) => {
+      if (String(input).endsWith('/models-v2')) {
+        models += 1;
+        if (models === 2) {
+          auth.saved = {
+            activeId: 'user-2',
+            profiles: [
+              {
+                id: 'user-2',
+                email: 'bea@example.com',
+                tokens: {
+                  accessToken: 'reconnected-access',
+                  refreshToken: 'reconnected-refresh',
+                  expiresAt: now + 120_000,
+                  scopes: ['grok-cli:access'],
+                },
+                frozen: false,
+              },
+            ],
+          };
+          await secrets.write('grok:accounts', JSON.stringify(auth.saved));
+        }
+        return new Response('denied', { status: 401 });
+      }
+      return Response.json({
+        access_token: 'renewed-access',
+        refresh_token: 'renewed-refresh',
+        expires_in: 900,
+        scope: 'grok-cli:access',
+      });
+    },
+  });
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: now + 120_000,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  await auth.load();
+  await expect(auth.models()).rejects.toThrow('Could not load models');
+  expect(models).toBe(2);
+  expect(auth.state().status).toBe('connected');
+  expect(auth.state().account).toBe('bea@example.com');
+  expect(secrets.values.get('grok:accounts')).toContain('reconnected-refresh');
+  expect(secrets.values.get('grok:accounts')).not.toContain('"frozen":true');
+});
+
 test('a model-catalog outage leaves the Grok session connected', async () => {
   const secrets = vault();
   const now = 1_000_000;
