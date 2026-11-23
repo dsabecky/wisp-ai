@@ -64,11 +64,15 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           TAG: ${{ steps.release.outputs.tag }}
           HAS_APP: ${{ steps.app.outputs.token != '' }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug || 'github-actions' }}
         run: |
           if git diff --quiet && [ -z "$(git status --porcelain)" ]; then echo "main already records $TAG."; exit 0; fi
           branch="release/record-$TAG"
-          git config user.name 'wisp-release[bot]'
-          git config user.email 'wisp-release[bot]@users.noreply.github.com'
+          # Commit as the App's bot account (github-actions[bot] without one) so GitHub links it.
+          bot="$APP_SLUG[bot]"
+          id=$(gh api "users/$bot" --jq .id)
+          git config user.name "$bot"
+          git config user.email "$id+$bot@users.noreply.github.com"
           git switch -c "$branch"
           git add -A
           git commit -m "chore(release): record $TAG"
