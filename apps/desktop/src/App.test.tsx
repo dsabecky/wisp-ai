@@ -1645,6 +1645,37 @@ test('Grok subscription onboarding lists the account models and can finish setup
   await waitFor(() => expect(request).toHaveBeenCalledWith('/auth/model', { model: slug }));
 });
 
+test('a retained Grok session can disconnect when it cannot stay connected', async () => {
+  status.grok = {
+    status: 'plan_permission_required',
+    revision: 1,
+    activeId: 'grok',
+    account: 'player@x.ai',
+    profiles: [{ id: 'grok', label: 'player@x.ai', connected: false }],
+  };
+  const router = renderApp();
+  await screen.findByRole('heading', { name: 'Wisp is ready' });
+  await act(() => router.navigate('/connections/xai'));
+  await screen.findByRole('heading', { name: 'Grok account' });
+  await fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+  await fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(request).toHaveBeenCalledWith('/grok/disconnect', undefined));
+
+  status.grok = { ...status.grok, status: 'reauth_required', revision: 2 };
+  await act(() => desktopStore.getState().actions.refresh());
+  expect(screen.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
+
+  status.grok = {
+    ...status.grok,
+    status: 'signed_out',
+    account: null,
+    profiles: [],
+    revision: 3,
+  };
+  await act(() => desktopStore.getState().actions.refresh());
+  expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+});
+
 test('onboarding searches the provider catalog and suggests a single saved model', async () => {
   localStorage.setItem('wisp:onboarding:v1', 'pending');
   status.auth = { status: 'signed_out', profiles: [], revision: 1 };

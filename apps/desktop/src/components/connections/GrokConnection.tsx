@@ -18,6 +18,9 @@ export default function GrokConnection() {
   const auth = app.status?.grok;
   const connected = auth?.status === 'connected';
   const pending = auth?.status === 'authorizing';
+  // Refresh failure and a missing plan keep the saved tokens so they can be revoked.
+  const sessionRetained =
+    connected || auth?.status === 'reauth_required' || auth?.status === 'plan_permission_required';
 
   return (
     <Card kind="provider">
@@ -72,7 +75,7 @@ export default function GrokConnection() {
             Cancel sign-in
           </Button>
         )}
-        {connected && (
+        {sessionRetained && (
           <Button
             intent="quiet"
             destructive
