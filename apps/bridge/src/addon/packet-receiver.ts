@@ -91,6 +91,7 @@ export function createPacketReceiver(deps: ReceiverDependencies) {
     const receivedAt = now();
     if (state.activeTransport && packet.session === state.activeTransport) {
       activeSeenAt = receivedAt;
+      pending.heard();
     }
     const establishesSession =
       packet.type === 'hello' || (!state.activeTransport && packet.type === 'poll');

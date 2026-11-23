@@ -217,7 +217,10 @@ export async function startBridge(options: BridgeOptions = {}) {
       logger,
     });
     resources.defer(() => publisher.stop());
-    const pending = new GameRequests(changed);
+    const pending = new GameRequests(changed, {
+      onTimeout: (timeout) =>
+        logger.warn({ event: 'game.request_timeout', ...timeout }, 'WoW did not answer a request'),
+    });
     resources.defer(() => pending.cancelAll('Bridge stopped'));
     const token = randomBytes(32).toString('hex');
     // Eve binds its port itself, so choose it here: another Wisp may hold 43186.
