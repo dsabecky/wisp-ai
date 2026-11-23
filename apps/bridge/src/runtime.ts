@@ -1,6 +1,7 @@
 import { characterLabel } from '@wisp/protocol/character-key';
 import { RuntimeResources } from './runtime-resources.ts';
 import { UsageTelemetry } from './telemetry.ts';
+import { ModelFailures } from './models/model-failures.ts';
 import { startRoutineScheduler } from './routines/routine-scheduler.ts';
 import { createPacketReceiver } from './addon/packet-receiver.ts';
 import { createCharacterAdoption } from './chat/character-adoption.ts';
@@ -157,6 +158,7 @@ export async function startBridge(options: BridgeOptions = {}) {
       grok,
     );
     await connections.load();
+    const modelFailures = new ModelFailures();
     const webSearch = new WebSearch(path.join(runtime, 'search.json'), vault, auth);
     await webSearch.load();
     resources.defer(() => auth.cancel());
@@ -308,6 +310,8 @@ export async function startBridge(options: BridgeOptions = {}) {
     }
     const run = createTurnRunner({
       telemetry,
+      modelFailures,
+      modelProvider: (model) => connections.provider(model),
       client,
       models: connections,
       capabilitySettings,
@@ -393,6 +397,7 @@ export async function startBridge(options: BridgeOptions = {}) {
       createAgentHandler({
         logger,
         telemetry,
+        modelFailures,
         token,
         auth,
         connections,

@@ -10,6 +10,7 @@ import { createSessionState } from '../src/session-state.ts';
 import { SnapshotGate } from '../src/addon/snapshots.ts';
 import { PRESENT_UI_TOOL } from '@wisp/protocol/reply-presentation';
 import type { UsageTelemetry } from '../src/telemetry.ts';
+import { ModelFailures, httpFailureKind } from '../src/models/model-failures.ts';
 
 const noUsage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
 const usageObserver = () => ({ observe: vi.fn(), usage: () => noUsage });
@@ -19,6 +20,7 @@ function fixture(
   telemetry?: Pick<UsageTelemetry, 'chat' | 'toolObserver' | 'usageObserver'>,
   idleTimeoutMs?: number,
   defaultModel = 'model',
+  extra: Partial<Parameters<typeof createTurnRunner>[0]> = {},
 ) {
   const chat = newChat('chat', 'one');
   let transport = 'one';
@@ -70,6 +72,7 @@ function fixture(
     logger,
     flushSnapshot,
     idleTimeoutMs,
+    ...extra,
   });
   return {
     chat,
@@ -181,6 +184,7 @@ test('real streamed turns report their mode, outcome and tool lifecycle to telem
     undefined,
     timing.firstTextMs,
     noUsage,
+    {},
   );
   f.chat.inline = false;
   f.chat.routineId = 'private-routine-id';
@@ -192,6 +196,7 @@ test('real streamed turns report their mode, outcome and tool lifecycle to telem
     undefined,
     expect.any(Number),
     noUsage,
+    {},
   );
 });
 
@@ -219,6 +224,7 @@ test('chat telemetry distinguishes early failures before a turn reaches the engi
       code,
       undefined,
       noUsage,
+      {},
     );
   }
   expect(f.send).not.toHaveBeenCalled();
@@ -252,6 +258,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     'turn_start_failed',
     undefined,
     noUsage,
+    {},
   );
 
   f.send.mockImplementationOnce(async () => ({
@@ -270,6 +277,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     'turn_result_failed',
     undefined,
     noUsage,
+    {},
   );
 
   f.send.mockImplementationOnce(async () => ({
@@ -289,6 +297,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     'timeout',
     undefined,
     noUsage,
+    {},
   );
 
   f.send.mockImplementationOnce(async () => {
@@ -304,6 +313,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     undefined,
     undefined,
     noUsage,
+    {},
   );
 });
 
@@ -331,6 +341,7 @@ test('chat telemetry separates plan usage limits from other failures', async () 
     'usage_limit',
     undefined,
     noUsage,
+    {},
   );
   // Routines read this classification; the message alone does not mention a limit.
   expect(endedOnUsageLimit(f.chat)).toBe(true);
@@ -344,6 +355,7 @@ test('chat telemetry separates plan usage limits from other failures', async () 
     'usage_limit',
     undefined,
     noUsage,
+    {},
   );
 });
 
@@ -529,6 +541,7 @@ test('old assistant messages cannot count as the first text of a new turn', asyn
     undefined,
     undefined,
     noUsage,
+    {},
   );
 });
 
@@ -730,6 +743,7 @@ test('a turn with no AI provider stops before the engine and explains the fix', 
     'no_provider',
     undefined,
     noUsage,
+    {},
   );
 
   // Other failures keep their own message and carry no notice code.
@@ -788,4 +802,74 @@ test('steady engine activity keeps a long turn alive past the idle timeout', asy
   await f.run.drain();
   expect(f.chat.status).toBe('done');
   expect(f.cancel).not.toHaveBeenCalled();
+});
+
+test('chat telemetry names the provider and why its own model requests failed during the turn', async () => {
+  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn(), usageObserver };
+  const failures = new ModelFailures();
+  const connection = '00000000-0000-4000-8000-000000000001';
+  const model = 'connection:' + connection + ':private-model';
+  const f = fixture(true, telemetry, undefined, model, {
+    modelFailures: failures,
+    modelProvider: (slug) => (slug === model ? 'google' : 'chatgpt'),
+  });
+  f.models.mockResolvedValue([{ slug: model, displayName: 'Private', efforts: ['medium'] }]);
+  const failedTurn = async () => ({
+    stream: async function* () {},
+    result: async () => ({
+      status: 'failed',
+      sessionEnded: false,
+      error: { name: 'Error', code: 'unknown', message: 'Private provider error' },
+    }),
+  });
+
+  // A failure from an earlier turn is not this turn's cause.
+  failures.record('eve', 'rate_limited');
+  f.send.mockImplementationOnce(failedTurn);
+  await f.run(f.chat, 'Private question');
+  expect(telemetry.chat).toHaveBeenLastCalledWith(
+    'chat',
+    'failed',
+    expect.any(Number),
+    'turn_result_failed',
+    undefined,
+    noUsage,
+    { provider: 'google', failureKind: undefined },
+  );
+
+  f.send.mockImplementationOnce(async () => {
+    failures.record('eve', httpFailureKind(404));
+    // Another chat's failure on the same connection is not this turn's.
+    failures.record('other-eve-session', 'rate_limited');
+    return failedTurn();
+  });
+  await f.run(f.chat, 'Private question');
+  expect(telemetry.chat).toHaveBeenLastCalledWith(
+    'chat',
+    'failed',
+    expect.any(Number),
+    'turn_result_failed',
+    undefined,
+    noUsage,
+    { provider: 'google', failureKind: 'not_found' },
+  );
+
+  // A retried request that later succeeded does not mark a completed turn.
+  f.send.mockImplementationOnce(async () => {
+    failures.record('eve', 'provider_error');
+    return {
+      stream: async function* () {},
+      result: async () => ({ status: 'completed', sessionEnded: false }),
+    };
+  });
+  await f.run(f.chat, 'Private question');
+  expect(telemetry.chat).toHaveBeenLastCalledWith(
+    'chat',
+    'completed',
+    expect.any(Number),
+    undefined,
+    undefined,
+    noUsage,
+    { provider: 'google', failureKind: undefined },
+  );
 });
