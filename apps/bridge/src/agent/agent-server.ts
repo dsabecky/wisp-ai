@@ -97,6 +97,7 @@ const inspectionTools = {
   target: 'inspect_target',
   trainer: 'inspect_trainer',
   flight_paths: 'inspect_flight_paths',
+  dungeons: 'query_dungeons',
   training: 'query_training',
   chat: 'read_chat',
   combat: 'read_combat',
@@ -490,7 +491,7 @@ export function createAgentApp(deps: AgentDependencies) {
           async (sections) =>
             rpcResponses.state.parse(
               await pending.request(
-                { chat: chat.id, session: currentTransport(), sections },
+                { chat: chat.id, session: currentTransport(), sections, agent: true },
                 abort,
               ),
             ),
@@ -502,6 +503,7 @@ export function createAgentApp(deps: AgentDependencies) {
           {
             chat: chat.id,
             session: currentTransport(),
+            agent: true,
             ...(action
               ? {
                   action: { ...action, expectedCharacter: expectedCharacter(chat.characterKey) },

@@ -10,7 +10,14 @@ import { SnapshotGate } from '../src/addon/snapshots.ts';
 import { PRESENT_UI_TOOL } from '@wisp/protocol/reply-presentation';
 import type { UsageTelemetry } from '../src/telemetry.ts';
 
-function fixture(titlesEnabled = true, telemetry?: Pick<UsageTelemetry, 'chat' | 'toolObserver'>) {
+const noUsage = { modelCalls: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 };
+const usageObserver = () => ({ observe: vi.fn(), usage: () => noUsage });
+
+function fixture(
+  titlesEnabled = true,
+  telemetry?: Pick<UsageTelemetry, 'chat' | 'toolObserver' | 'usageObserver'>,
+  idleTimeoutMs?: number,
+) {
   const chat = newChat('chat', 'one');
   let transport = 'one';
   let current = true;
@@ -23,7 +30,8 @@ function fixture(titlesEnabled = true, telemetry?: Pick<UsageTelemetry, 'chat' |
     },
     result: async () => ({ status: 'completed', sessionEnded: false }),
   }));
-  const session = { id: 'eve', send };
+  const cancel = vi.fn(async () => {});
+  const session = { id: 'eve', send, cancel };
   const client = {
     sessions: { create: vi.fn(async () => ({ session })), attach: () => session },
   } as unknown as Pick<Client, 'sessions'>;
@@ -35,6 +43,7 @@ function fixture(titlesEnabled = true, telemetry?: Pick<UsageTelemetry, 'chat' |
   );
   const isReady = vi.fn(() => true);
   const accountBusy = vi.fn(() => false);
+  const hasProvider = vi.fn(() => true);
   const logger = { info: vi.fn(), error: vi.fn() };
   const flushSnapshot = vi.fn();
   const changed = vi.fn();
@@ -53,21 +62,25 @@ function fixture(titlesEnabled = true, telemetry?: Pick<UsageTelemetry, 'chat' |
     isReady,
     isStopping: () => false,
     accountBusy,
+    hasProvider,
     isCurrent: () => current,
     changed,
     logger,
     flushSnapshot,
+    idleTimeoutMs,
   });
   return {
     chat,
     run,
     send,
+    cancel,
     client,
     models,
     prepare,
     complete,
     isReady,
     accountBusy,
+    hasProvider,
     logger,
     flushSnapshot,
     changed,
@@ -141,7 +154,7 @@ test('a streamed comparison requests publication before the tool settles', async
 
 test('real streamed turns report their mode, outcome and tool lifecycle to telemetry', async () => {
   const observe = vi.fn();
-  const telemetry = { chat: vi.fn(), toolObserver: () => observe };
+  const telemetry = { chat: vi.fn(), toolObserver: () => observe, usageObserver };
   const f = fixture(true, telemetry);
   f.chat.inline = true;
   await f.run(f.chat, 'Private question');
@@ -156,6 +169,7 @@ test('real streamed turns report their mode, outcome and tool lifecycle to telem
     expect.any(Number),
     undefined,
     timing.firstTextMs,
+    noUsage,
   );
   f.chat.inline = false;
   f.chat.routineId = 'private-routine-id';
@@ -166,11 +180,12 @@ test('real streamed turns report their mode, outcome and tool lifecycle to telem
     expect.any(Number),
     undefined,
     expect.any(Number),
+    noUsage,
   );
 });
 
 test('chat telemetry distinguishes early failures before a turn reaches the engine', async () => {
-  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn() };
+  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn(), usageObserver };
   const f = fixture(true, telemetry);
   f.isReady.mockReturnValueOnce(false);
   f.accountBusy.mockReturnValueOnce(true);
@@ -192,13 +207,14 @@ test('chat telemetry distinguishes early failures before a turn reaches the engi
       expect.any(Number),
       code,
       undefined,
+      noUsage,
     );
   }
   expect(f.send).not.toHaveBeenCalled();
 });
 
 test('chat telemetry distinguishes failed, timed-out and interrupted turns', async () => {
-  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn() };
+  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn(), usageObserver };
   const f = fixture(true, telemetry);
   f.send.mockRejectedValueOnce(Error('Private provider error'));
   await f.run(f.chat, 'Private question');
@@ -208,6 +224,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     expect.any(Number),
     'turn_start_failed',
     undefined,
+    noUsage,
   );
 
   f.send.mockImplementationOnce(async () => ({
@@ -225,6 +242,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     expect.any(Number),
     'turn_result_failed',
     undefined,
+    noUsage,
   );
 
   f.send.mockImplementationOnce(async () => ({
@@ -243,6 +261,7 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     expect.any(Number),
     'timeout',
     undefined,
+    noUsage,
   );
 
   f.send.mockImplementationOnce(async () => {
@@ -257,11 +276,12 @@ test('chat telemetry distinguishes failed, timed-out and interrupted turns', asy
     expect.any(Number),
     undefined,
     undefined,
+    noUsage,
   );
 });
 
 test('chat telemetry separates plan usage limits from other failures', async () => {
-  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn() };
+  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn(), usageObserver };
   const f = fixture(true, telemetry);
   f.send.mockImplementationOnce(async () => ({
     stream: async function* () {},
@@ -283,6 +303,7 @@ test('chat telemetry separates plan usage limits from other failures', async () 
     expect.any(Number),
     'usage_limit',
     undefined,
+    noUsage,
   );
   // Routines read this classification; the message alone does not mention a limit.
   expect(endedOnUsageLimit(f.chat)).toBe(true);
@@ -295,6 +316,7 @@ test('chat telemetry separates plan usage limits from other failures', async () 
     expect.any(Number),
     'usage_limit',
     undefined,
+    noUsage,
   );
 });
 
@@ -451,7 +473,7 @@ test.each(['character', 'delete', 'interrupt'] as const)(
 );
 
 test('old assistant messages cannot count as the first text of a new turn', async () => {
-  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn() };
+  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn(), usageObserver };
   const f = fixture(true, telemetry);
   f.chat.messages.push({ role: 'assistant', text: 'Previous answer' });
   f.send.mockImplementationOnce(async () => ({
@@ -479,6 +501,7 @@ test('old assistant messages cannot count as the first text of a new turn', asyn
     expect.any(Number),
     undefined,
     undefined,
+    noUsage,
   );
 });
 
@@ -658,4 +681,84 @@ test('disabled titles do not request automatic naming', async () => {
   await f.run.drain();
   expect(f.chat.titleGenerated).not.toBe(true);
   expect(f.complete).not.toHaveBeenCalled();
+});
+
+test('a turn with no AI provider stops before the engine and explains the fix', async () => {
+  const telemetry = { chat: vi.fn(), toolObserver: () => vi.fn(), usageObserver };
+  const f = fixture(true, telemetry);
+  f.hasProvider.mockReturnValueOnce(false);
+  await f.run(f.chat, 'Private question');
+  expect(f.prepare).not.toHaveBeenCalled();
+  expect(f.send).not.toHaveBeenCalled();
+  expect(f.chat.status).toBe('error');
+  expect(f.chat.messages.at(-1)).toEqual({
+    role: 'system',
+    text: expect.stringContaining('connect ChatGPT or an API key'),
+    notice: 'noProvider',
+  });
+  expect(telemetry.chat).toHaveBeenLastCalledWith(
+    'chat',
+    'failed',
+    expect.any(Number),
+    'no_provider',
+    undefined,
+    noUsage,
+  );
+
+  // Other failures keep their own message and carry no notice code.
+  f.prepare.mockRejectedValueOnce(new Error('Model is no longer configured.'));
+  await f.run(f.chat, 'Private question');
+  expect(f.chat.messages.at(-1)).toEqual({
+    role: 'system',
+    text: 'Model is no longer configured.',
+  });
+});
+
+test('a turn whose engine goes silent fails as a timeout and frees the engine session', async () => {
+  const chats: { chat: string; outcome: string }[] = [];
+  const f = fixture(
+    true,
+    {
+      chat: (_mode, outcome) => chats.push({ chat: 'chat', outcome }),
+      toolObserver: () => () => {},
+      usageObserver,
+    } as Pick<UsageTelemetry, 'chat' | 'toolObserver' | 'usageObserver'>,
+    30,
+  );
+  f.send.mockResolvedValueOnce({
+    stream: async function* (options?: { signal?: AbortSignal }) {
+      yield { type: 'content.delta', data: { partId: 'reply', kind: 'text', delta: 'Hel' } };
+      // The engine keeps the stream open but never sends another event.
+      await new Promise<void>((_, reject) => {
+        options!.signal!.addEventListener('abort', () => reject(Error('Read aborted')), {
+          once: true,
+        });
+      });
+    },
+    result: async () => ({ status: 'completed', sessionEnded: false }),
+  });
+  await f.run(f.chat, 'Question');
+  await f.run.drain();
+  expect(f.chat.status).toBe('error');
+  expect(f.chat.messages.at(-1)?.text).toMatch(/received nothing from the AI/);
+  expect(f.cancel).toHaveBeenCalledTimes(1);
+  expect(f.chat.eveId).toBeUndefined();
+  expect(chats.at(-1)?.outcome).toBe('timeout');
+});
+
+test('steady engine activity keeps a long turn alive past the idle timeout', async () => {
+  const f = fixture(true, undefined, 40);
+  f.send.mockResolvedValueOnce({
+    stream: async function* () {
+      for (let index = 0; index < 5; index++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        yield { type: 'content.delta', data: { partId: 'reply', kind: 'text', delta: 'a' } };
+      }
+    },
+    result: async () => ({ status: 'completed', sessionEnded: false }),
+  });
+  await f.run(f.chat, 'Question');
+  await f.run.drain();
+  expect(f.chat.status).toBe('done');
+  expect(f.cancel).not.toHaveBeenCalled();
 });

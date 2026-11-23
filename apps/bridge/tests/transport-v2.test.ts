@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { deflateSync } from 'node:zlib';
-import { DiskTransport, preferBulkDelivery } from '../src/addon/transport.ts';
+import { ACTIVE_SESSION_MS, DiskTransport, preferBulkDelivery } from '../src/addon/transport.ts';
 import type { Packet } from '@wisp/protocol/protocol';
 import {
   DOWNLINK_HELPERS,
@@ -43,6 +43,7 @@ async function fixture(
   await writeFile(file, original);
   const errors: unknown[] = [];
   const packets: Packet[] = [];
+  const heldOff: string[] = [];
   const bridge = new DiskTransport(
     root,
     (packet) => {
@@ -50,6 +51,7 @@ async function fixture(
       receive(packet, bridge);
     },
     (error) => errors.push(error),
+    (session) => heldOff.push(session),
   );
   const hello = { type: 'hello', session: 'v2', seq: 1, at: 1, transportVersion: 2 };
   return {
@@ -60,8 +62,9 @@ async function fixture(
     original,
     packets,
     errors,
+    heldOff,
     hello,
-    async send(packet: unknown, firstSequence = 0, compressed = false) {
+    async send(packet: unknown, firstSequence = 0, compressed = false, target = file) {
       const raw = Buffer.from(JSON.stringify(packet));
       const frames = encodeMessage(
         compressed ? deflateSync(raw) : raw,
@@ -71,8 +74,8 @@ async function fixture(
         compressed,
       );
       for (const frame of frames) {
-        await writeFile(file, replaceUplink(await readFile(file, 'utf8'), frame));
-        await bridge.read(file, false);
+        await writeFile(target, replaceUplink(await readFile(target, 'utf8'), frame));
+        await bridge.read(target, false);
       }
       return frames;
     },
@@ -760,5 +763,85 @@ test('a compact bulk confirmation updates both its latency and slot budget witho
   } finally {
     await f.close();
     now.mockRestore();
+  }
+});
+
+test('another game window keeps the bridge until its heartbeat finds the first one quiet or its player asks', async () => {
+  const f = await fixture();
+  const other = path.join(path.dirname(path.dirname(f.file)), 'other/AddOns.txt');
+  await mkdir(path.dirname(other), { recursive: true });
+  await writeFile(other, f.original);
+  let clock = 1_000_000;
+  const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+  const sessions = () => f.packets.map((packet) => packet.session + ':' + packet.type);
+  try {
+    await f.send(f.hello, 10);
+    clock += 30_000;
+    const heartbeat = { type: 'hello', seq: 1, transportVersion: 2, heartbeat: true };
+    await f.send({ ...heartbeat, session: 'b', at: 2 }, 10, false, other);
+    assert.deepEqual(sessions(), ['v2:hello'], 'a heartbeat cannot take an active window');
+    assert.deepEqual(f.heldOff, ['b']);
+
+    // The active window still owns replies: its next message is delivered.
+    await f.send({ type: 'poll', session: 'v2', seq: 2, at: 3, transportVersion: 2 }, 20);
+    assert.deepEqual(sessions(), ['v2:hello', 'v2:poll']);
+
+    // The other window's player sent something that went unanswered.
+    await f.send({ ...heartbeat, session: 'b', seq: 2, at: 4, takeover: true }, 20, false, other);
+    assert.deepEqual(sessions().at(-1), 'b:hello');
+    await f.send({ ...heartbeat, session: 'v2', seq: 3, at: 5 }, 30);
+    assert.deepEqual(sessions().at(-1), 'b:hello', 'now the first window waits');
+
+    // Once the owner goes quiet, a heartbeat may take the bridge.
+    clock += ACTIVE_SESSION_MS;
+    await f.send({ ...heartbeat, session: 'v2', seq: 4, at: 6 }, 40);
+    assert.deepEqual(sessions().at(-1), 'v2:hello');
+    assert.deepEqual(f.errors, []);
+  } finally {
+    now.mockRestore();
+    await f.close();
+  }
+});
+
+test('an active session rereads only its own state file between full folder walks', async () => {
+  const f = await fixture();
+  try {
+    await f.bridge.start();
+    await f.send({ ...f.hello, mailboxVersion: 1, compactAck: true });
+    assert.equal(f.packets.length, 1);
+    const scan = vi.spyOn(f.bridge, 'scan');
+    const read = vi.spyOn(f.bridge, 'read');
+    await delay(1200);
+    assert.equal(scan.mock.calls.length, 0, 'no full walk within the scan interval');
+    assert.ok(read.mock.calls.some(([file]) => file === f.file));
+    assert.deepEqual(f.errors, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test('an abandoned control write removes its temporary copy', async () => {
+  const f = await fixture();
+  try {
+    await f.send({ ...f.hello, mailboxVersion: 1, compactAck: true });
+    // Make the game appear to rewrite the file between the bridge's two reads.
+    const transport = f.bridge as unknown as {
+      sharedFile: <T>(operation: () => Promise<T>) => Promise<T>;
+    };
+    const original = transport.sharedFile.bind(f.bridge);
+    let reads = 0;
+    transport.sharedFile = async <T>(operation: () => Promise<T>) => {
+      const value = await original(operation);
+      return (
+        typeof value === 'string' && ++reads === 2 ? value + '\r\nGame: enabled' : value
+      ) as T;
+    };
+    const before = await readFile(f.file, 'utf8');
+    await f.bridge.publish({ rev: 1, session: 'v2', connected: true, text: 'abandoned' });
+    assert.ok(reads >= 2, 'the write reached its second read');
+    await assert.rejects(readFile(f.file + '.wisp-control.tmp'), { code: 'ENOENT' });
+    assert.equal(await readFile(f.file, 'utf8'), before, 'the changed file was not replaced');
+  } finally {
+    await f.close();
   }
 });

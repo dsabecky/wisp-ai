@@ -256,3 +256,26 @@ test('a new character key is adopted before the packet that reports it is handle
   expect(observe).toHaveBeenCalledWith(key, expect.anything());
   expect(calls).toEqual(['adopt', 'observe']);
 });
+
+test('a new game window logs why it took the bridge and how long the old one was idle', () => {
+  let clock = 1_000_000;
+  const info = vi.fn();
+  const f = fixture({ now: () => clock, logger: { info, warn: vi.fn() } });
+  f.receive(packetSchema.parse({ type: 'poll', session: 'one', seq: 1, at: 1 }));
+  clock += 30_000;
+  f.receive(
+    packetSchema.parse({
+      type: 'hello',
+      session: 'two',
+      seq: 1,
+      at: 2,
+      heartbeat: true,
+      takeover: true,
+    }),
+  );
+  expect(f.state.activeTransport).toBe('two');
+  expect(info).toHaveBeenCalledWith(
+    { event: 'transport.session_changed', reason: 'takeover', previousIdleMs: 30_000 },
+    expect.any(String),
+  );
+});

@@ -16,10 +16,11 @@ local TOOL_STATES = {
     completed = { cell = 0, tint = MUTED },
     running = { cell = 1, tint = ACCENT },
     failed = { cell = 2, tint = COLORS.danger },
+    -- Stopped with its turn: the failure mark, without the alarm.
+    cancelled = { cell = 2, tint = MUTED },
 }
 local toolGroupsExpanded = {}
 
-ns.itemRevision = 0
 local function linked(row)
     row:EnableMouse(true)
     row:SetHyperlinksEnabled(true)
@@ -310,7 +311,13 @@ local function toolDetails(tool, name)
     return #lines > 0 and table.concat(lines, "\n\n") or nil
 end
 
-local function toolCallRow(chatId, call, id, callId, indent)
+-- A call still marked running after its turn stopped will never finish.
+local function toolStatus(tool, working)
+    local status = tool.status or "completed"
+    return (status == "running" and not working) and "cancelled" or status
+end
+
+local function toolCallRow(chatId, call, id, callId, indent, working)
     local tool = call.tool or {}
     local name = tool.label or call.text or "Tool"
     local detail = toolDetails(tool, name)
@@ -320,7 +327,7 @@ local function toolCallRow(chatId, call, id, callId, indent)
         id = id,
         role = "tool",
         text = name,
-        tool = { status = tool.status or "completed" },
+        tool = { status = toolStatus(tool, working) },
         toolIndent = indent,
         groupKey = key,
         groupExpanded = expanded,
@@ -328,19 +335,22 @@ local function toolCallRow(chatId, call, id, callId, indent)
     }
 end
 
-local function appendToolGroup(messages, chatId, calls, id, loading)
+local function appendToolGroup(messages, chatId, calls, id, loading, working)
     if #calls == 1 then
         local call = calls[1]
-        messages[#messages + 1] = toolCallRow(chatId, call, id, id .. "-call-" .. (call.id or 1), 0)
+        messages[#messages + 1] =
+            toolCallRow(chatId, call, id, id .. "-call-" .. (call.id or 1), 0, working)
         return
     end
-    local running, failed, latest
+    local running, failed, cancelled, latest
     for _, call in ipairs(calls) do
         local tool = call.tool or {}
         latest = tool.label or call.text or "Tool"
-        local status = tool.status or "completed"
+        local status = toolStatus(tool, working)
         if status == "running" then
             running = latest
+        elseif status == "cancelled" then
+            cancelled = true
         elseif status ~= "completed" then
             failed = true
         end
@@ -355,14 +365,17 @@ local function appendToolGroup(messages, chatId, calls, id, loading)
                 expanded and not loading and (#calls .. " tool calls")
                 or (latest .. "  +" .. (#calls - 1))
             ),
-        tool = { status = running and "running" or (failed and "failed" or "completed") },
+        tool = {
+            status = running and "running"
+                or (failed and "failed" or (cancelled and "cancelled" or "completed")),
+        },
         groupKey = key,
         groupExpanded = expanded,
     }
     if expanded then
         for index, call in ipairs(calls) do
             local callId = id .. "-call-" .. (call.id or index)
-            messages[#messages + 1] = toolCallRow(chatId, call, callId, callId, 18)
+            messages[#messages + 1] = toolCallRow(chatId, call, callId, callId, 18, working)
         end
     end
 end
@@ -374,12 +387,13 @@ end
 function ns.UI.DisplayMessages(chat)
     local messages, calls, groupId = {}, {}, nil
     local hasReplyContent, turnStart = false, 1
+    local working = chat ~= nil and chat.status == "working"
     local function flushTools(loading)
         if not groupId then
             return
         end
         local header = #messages + 1
-        appendToolGroup(messages, chat.id, calls, groupId, loading)
+        appendToolGroup(messages, chat.id, calls, groupId, loading, working)
         messages[header].turnLoading = loading
         calls, groupId = {}, nil
     end
@@ -408,7 +422,7 @@ function ns.UI.DisplayMessages(chat)
         end
     end
     local hasToolActivity = groupId ~= nil
-    flushTools(hasToolActivity and chat.status == "working")
+    flushTools(hasToolActivity and working)
     return messages, hasToolActivity, hasReplyContent, turnStart
 end
 
@@ -443,26 +457,34 @@ function ns.UI.MessageGap(previous, message)
     end
     return previous and ns.UI.MessageSpeaker(previous) ~= ns.UI.MessageSpeaker(message) and 12 or 0
 end
-function ns.UI.ChatSignature(chat)
-    local parts = { chat and chat.id or "" }
-    for _, message in ipairs(chat and chat.messages or {}) do
-        parts[#parts + 1] = (message.id or "")
-            .. (message.text or "")
-            .. (message.tool and message.tool.status or "")
-            .. (message.tool and message.tool.resultPreview or "")
-            .. (ns.UI.RichSignature and ns.UI.RichSignature({ message.ui, message.parts }) or "")
-    end
-    return table.concat(parts, "\31")
+-- Whether a rendered row says something different from the last time it was
+-- drawn. A row drawn for the first time is not a change by itself: it may be an
+-- earlier message coming into view; a new last message is checked separately.
+-- Expanding or collapsing tools rewrites a row's text, but the player did that.
+function ns.UI.RowChanged(row, message)
+    local said = row.replyView and row.replyView.said
+    local status = message.tool and message.tool.status
+    local preview = message.tool and message.tool.resultPreview
+    local expanded = message.groupExpanded and true or false
+    local changed = row.seenSaid ~= nil
+        and row.seenExpanded == expanded
+        and (row.seenSaid ~= said or row.seenStatus ~= status or row.seenPreview ~= preview)
+    row.seenSaid, row.seenStatus, row.seenPreview = said, status, preview
+    row.seenExpanded = expanded
+    return changed
 end
-function ns.UI.UpdateNewMessages(button, chat, follow, switched)
-    local signature = ns.UI.ChatSignature(chat)
-    if not switched and button.signature and button.signature ~= signature and not follow then
+-- `changed` says whether a rendered row changed; a new last message counts too.
+function ns.UI.UpdateNewMessages(button, chat, follow, switched, changed)
+    local messages = chat and chat.messages or {}
+    local last = messages[#messages]
+    local lastId = last and (last.id or tostring(#messages)) or ""
+    if not switched and button.lastId and (changed or button.lastId ~= lastId) and not follow then
         button.pending = true
     end
     if follow or switched then
         button.pending = false
     end
-    button.signature = signature
+    button.lastId = lastId
     button:SetShown(button.pending == true and not follow)
 end
 function ns.UI.MessageSpeaker(message)
@@ -659,7 +681,9 @@ function ns.UI.RenderMessageRow(row, chat, message, width, showAuthor, animateRe
             else
                 text, pending = formatted(message.text, message.references, message.role == "user")
             end
-            ns.UI.Widgets.ChatFont(row.text, message.text)
+            -- Choose the face from the rendered text: emoji are texture tags by
+            -- now, so a Latin message with an emoji keeps Inter.
+            ns.UI.Widgets.ChatFont(row.text, text)
             setText(row.text, text)
             if message.role == "user" and not (message.ui and #message.ui > 0) then
                 local natural = row.text.GetUnboundedStringWidth

@@ -1,9 +1,8 @@
 import type { ToolStub } from 'eve/evals';
 
-// Catalog, web and map fixtures for non-gear questions. Put these before
+// Quest, dungeon and map fixtures for non-gear questions. Put these before
 // fedrathStubs(): the first matching stub wins.
 const json = (value: unknown) => JSON.parse(JSON.stringify(value));
-const thewowdb = { name: 'TheWoWDB', version: 'forever' };
 
 export function questStubs(): ToolStub[] {
   return json([
@@ -70,63 +69,22 @@ export function questStubs(): ToolStub[] {
   ]);
 }
 
-export function dungeonStubs(): ToolStub[] {
-  return json([
-    {
-      id: 'zone-search',
-      tool: 'thewowdb__search_database',
-      outcome: {
-        response: {
-          status: 'available',
-          source: thewowdb,
-          data: {
-            results: [
-              { id: 2437, name: 'Sima Ígnea', kind: 'zone' },
-              { id: 718, name: 'Cuevas de los Lamentos', kind: 'zone' },
-            ],
-          },
-        },
-      },
-    },
-    {
-      id: 'zone-entity',
-      tool: 'thewowdb__get_database_entity',
-      outcome: {
-        response: {
-          status: 'available',
-          source: thewowdb,
-          data: { name: 'Sima Ígnea', kind: 'zone', levelRange: [13, 18], parent: 'Orgrimmar' },
-        },
-      },
-    },
-    {
-      id: 'web-search',
-      tool: 'web__web_search',
-      outcome: {
-        response: {
-          results: [
-            {
-              title: 'WoW Forever dungeon level guide',
-              url: 'https://example.org/forever/dungeons',
-              excerpt:
-                'Ragefire Chasm (Sima Ígnea) 13-18, Wailing Caverns 17-24, Deadmines 17-26, Shadowfang Keep 22-30. Dungeon Finder unlocks at level 13.',
-            },
-          ],
-        },
-      },
-    },
-    {
-      id: 'web-fetch',
-      tool: 'web_fetch',
-      outcome: {
-        response: {
-          url: 'https://example.org/forever/dungeons',
-          content:
-            'Ragefire Chasm sits inside Orgrimmar in the Cleft of Shadow (entrance 52.8, 49.6). Recommended 13-18. Wailing Caverns in the Barrens: 17-24.',
-        },
-      },
-    },
-  ]);
+// Catalog and web lookups the dungeon scenarios should not need, since
+// wow__query_dungeons answers them. They return nothing rather than facts, so
+// a stray search neither reaches the real services nor contradicts the game.
+export function noLookupStubs(): ToolStub[] {
+  return json(
+    [
+      'thewowdb__search_database',
+      'thewowdb__get_database_entity',
+      'web__web_search',
+      'web_fetch',
+    ].map((tool) => ({
+      id: 'no-' + tool,
+      tool,
+      outcome: { response: { status: 'available', data: { results: [] } } },
+    })),
+  );
 }
 
 export function mapStubs(): ToolStub[] {
@@ -148,6 +106,141 @@ export function mapStubs(): ToolStub[] {
       id: 'waypoint',
       tool: 'wow__set_map_waypoint',
       outcome: { response: { status: 'available', data: { placed: true, navigation: true } } },
+    },
+  ]);
+}
+
+// wow__query_dungeons for a level 21 Horde character: names and ranges as Forever's
+// group finder returns them, entrances from Wisp's generated table.
+const reading = { characterLevel: 21, faction: 'Horde' };
+const rfc = {
+  name: 'Sima Ígnea',
+  instanceMapId: 389,
+  minLevel: 13,
+  maxLevel: 18,
+  players: 5,
+  entrances: [{ mapId: 1454, zone: 'Orgrimmar', x: 53, y: 48.9 }],
+};
+const dungeons = [
+  rfc,
+  {
+    name: 'Salón de Señores Feudales',
+    instanceMapId: 3065,
+    minLevel: 13,
+    maxLevel: 20,
+    players: 5,
+    entrances: [{ mapId: 1455, zone: 'Forjaz', x: 27.7, y: 47.9 }],
+  },
+  {
+    name: 'Cuevas de los Lamentos',
+    instanceMapId: 43,
+    minLevel: 15,
+    maxLevel: 24,
+    players: 5,
+    entrances: [{ mapId: 1413, zone: 'Los Baldíos', x: 47.7, y: 35 }],
+  },
+  {
+    name: 'Ruinas de Lordaeron',
+    instanceMapId: 2999,
+    minLevel: 15,
+    maxLevel: 22,
+    players: 5,
+    entrances: [{ mapId: 1458, zone: 'Entrañas', x: 72.5, y: 11.4 }],
+  },
+  {
+    name: 'Minas de la Muerte',
+    instanceMapId: 36,
+    minLevel: 17,
+    maxLevel: 26,
+    players: 5,
+    entrances: [{ mapId: 1436, zone: 'Páramos de Poniente', x: 38.2, y: 77.5 }],
+  },
+  {
+    name: 'Castillo de Colmillo Oscuro',
+    instanceMapId: 33,
+    minLevel: 20,
+    maxLevel: 30,
+    players: 5,
+    entrances: [{ mapId: 1421, zone: 'Bosque de Argénteos', x: 44.7, y: 67.8 }],
+  },
+  {
+    name: 'Cavernas de Brazanegra',
+    instanceMapId: 48,
+    minLevel: 24,
+    maxLevel: 32,
+    players: 5,
+    entrances: [{ mapId: 1440, zone: 'Vallefresno', x: 16.5, y: 11 }],
+  },
+  {
+    name: 'Sitio de Excavación: Los Humedales',
+    instanceMapId: 2998,
+    minLevel: 26,
+    maxLevel: 33,
+    players: 5,
+    entrances: [{ mapId: 1437, zone: 'Los Humedales', x: 47.8, y: 56.2 }],
+  },
+  {
+    name: 'Ciudad de Dalaran',
+    instanceMapId: 2959,
+    minLevel: 28,
+    maxLevel: 35,
+    players: 5,
+    entrances: [{ mapId: 1416, zone: 'Montañas de Alterac', x: 8.5, y: 59.3 }],
+  },
+  {
+    name: 'Gnomeregan',
+    instanceMapId: 90,
+    minLevel: 29,
+    maxLevel: 38,
+    players: 5,
+    entrances: [{ mapId: 1426, zone: 'Dun Morogh', x: 17.7, y: 39.2 }],
+  },
+  {
+    name: 'Horado Rajacieno',
+    instanceMapId: 47,
+    minLevel: 29,
+    maxLevel: 38,
+    players: 5,
+    entrances: [{ mapId: 1413, zone: 'Los Baldíos', x: 42.3, y: 89.9 }],
+  },
+  {
+    name: 'Monasterio Escarlata - Cementerio',
+    instanceMapId: 189,
+    minLevel: 30,
+    maxLevel: 38,
+    players: 5,
+    entrances: [{ mapId: 1420, zone: 'Claros de Tirisfal', x: 85.1, y: 31.4 }],
+  },
+  {
+    name: 'La Ciudad Anegada',
+    instanceMapId: 2970,
+    minLevel: 35,
+    maxLevel: 42,
+    players: 5,
+    entrances: [{ mapId: 1434, zone: 'Vega de Tuercespina', x: 21.3, y: 27.8 }],
+  },
+  {
+    name: "Bastión de Krol'dok",
+    instanceMapId: 3039,
+    minLevel: 40,
+    maxLevel: 47,
+    players: 5,
+    entrances: [{ mapId: 2548, zone: "Krol'dok", x: 37.5, y: 37.3 }],
+  },
+];
+
+export function dungeonStubs(): ToolStub[] {
+  return json([
+    {
+      id: 'dungeon-rfc',
+      tool: 'wow__query_dungeons',
+      match: { dungeon: { pattern: '[Ss]ima|[Rr]agefire|RFC|rfc' } },
+      outcome: { response: { status: 'available', data: { ...reading, dungeons: [rfc] } } },
+    },
+    {
+      id: 'dungeon-list',
+      tool: 'wow__query_dungeons',
+      outcome: { response: { status: 'available', data: { ...reading, dungeons } } },
     },
   ]);
 }

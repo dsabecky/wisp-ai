@@ -1,5 +1,5 @@
-import { watch } from 'node:fs';
-import { readdir, readFile, mkdir, writeFile, rename } from 'node:fs/promises';
+import { watch, type FSWatcher } from 'node:fs';
+import { readdir, readFile, mkdir, writeFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -58,6 +58,16 @@ export function preferBulkDelivery(bytes: number, costs: DownlinkCosts) {
   return fragments * costs.fragmentMs - costs.bulkMs >= slotCostMs;
 }
 
+/**
+ * A game window that sent anything this recently keeps the bridge: another window's
+ * periodic heartbeat (every 60 seconds) cannot take it. Two windows otherwise steal
+ * the session from each other on every heartbeat, interrupting turns each time.
+ */
+export const ACTIVE_SESSION_MS = 150_000;
+
+/** How often the fallback tick walks every character folder once a session is active. */
+export const FULL_SCAN_INTERVAL_MS = 5000;
+
 export class DiskTransport {
   private scans?: Promise<void>;
   private reads = new Map<string, Promise<void>>();
@@ -66,6 +76,9 @@ export class DiskTransport {
   private activeFile?: string;
   private activeSession?: string;
   private activeAt = 0;
+  /** Wall-clock time of the last message from the active window. */
+  private activeSeenAt = 0;
+  private onHeldOff: (session: string) => void;
   private uplinkBusy = new Map<string, boolean>();
   private uplinkObserved = new Map<string, { frame: Buffer; at: number }>();
   private publishedRevision = 0;
@@ -82,14 +95,13 @@ export class DiskTransport {
   private controlTimer?: ReturnType<typeof setInterval>;
   private controlWriting?: Promise<void>;
   private lastControlWriteAt = 0;
-  seen = new Map<string, number>();
   stopped = false;
   published = '';
   timer?: ReturnType<typeof setInterval>;
   nextSlot = 1;
   peerRevision = 0;
   writing = Promise.resolve();
-  watchers: ReturnType<typeof watch>[] = [];
+  watchers = new Map<string, FSWatcher>();
   performance: {
     controlWrites: number;
     wireBytes: number;
@@ -115,20 +127,32 @@ export class DiskTransport {
     wow: string,
     receive: (packet: Packet) => void,
     onError: (error: unknown) => void = console.error,
+    onHeldOff: (session: string) => void = () => {},
   ) {
     this.wow = wow;
     this.receive = receive;
     this.onError = onError;
+    this.onHeldOff = onHeldOff;
   }
   async start() {
     await this.scan(true);
     if (this.stopped) return;
+    let lastScanAt = Date.now();
     this.timer = setInterval(() => {
-      this.scans ??= this.scan(false)
-        .catch(this.onError)
-        .finally(() => {
-          this.scans = undefined;
-        });
+      if (this.scans) return;
+      // Folder watchers deliver most changes; this tick is the fallback.
+      // Walking every character folder and rereading every state file each
+      // second costs I/O that grows with the number of characters, so once a
+      // game session is active only its file is reread every second and the
+      // full walk (new characters, character switches) runs less often.
+      const active = this.activeFile;
+      const work =
+        !active || Date.now() - lastScanAt >= FULL_SCAN_INTERVAL_MS
+          ? ((lastScanAt = Date.now()), this.scan(false))
+          : this.read(active, false);
+      this.scans = work.catch(this.onError).finally(() => {
+        this.scans = undefined;
+      });
     }, 1000);
     this.controlTimer = setInterval(() => {
       if (this.activeFile && this.controlPending()) {
@@ -163,23 +187,46 @@ export class DiskTransport {
         } else if (entry.name.toLowerCase() === 'addons.txt') {
           if (!this.mailboxDecoders.has(file)) {
             this.mailboxDecoders.set(file, new MailboxDecoder(UPLINK_KIND));
-            try {
-              this.watchers.push(
-                watch(dir, (_, name) => {
-                  if (String(name).toLowerCase() === 'addons.txt') {
-                    void this.read(file, false).catch(this.onError);
-                  }
-                }),
-              );
-            } catch (error) {
-              this.onError(error);
-            }
           }
+          this.watchDirectory(dir, file);
           await this.read(file, baseline);
         }
       }
     };
     await walk(account, 0);
+  }
+  /**
+   * Watch a character folder for state-file changes. The watch only speeds up
+   * reads; the one-second scan still finds every change. A watcher that fails
+   * (for example because its folder was deleted or renamed) is closed and
+   * dropped instead of raising an unhandled 'error' event, which would end the
+   * bridge process; the next scan that still finds the folder watches it again.
+   */
+  private watchDirectory(dir: string, file: string) {
+    if (this.stopped || this.watchers.has(dir)) {
+      return;
+    }
+    let watcher: FSWatcher;
+    try {
+      watcher = watch(dir, (_, name) => {
+        if (String(name).toLowerCase() === 'addons.txt') {
+          void this.read(file, false).catch(this.onError);
+        }
+      });
+    } catch (error) {
+      this.onError(error);
+      return;
+    }
+    watcher.on('error', (error) => {
+      watcher.close();
+      if (this.watchers.get(dir) === watcher) {
+        this.watchers.delete(dir);
+      }
+      if (!this.stopped) {
+        this.onError(error);
+      }
+    });
+    this.watchers.set(dir, watcher);
   }
   async read(file: string, baseline: boolean) {
     if (this.stopped) return;
@@ -276,6 +323,16 @@ export class DiskTransport {
               // Ignore old sessions from inactive historical character files.
               if (this.activeFile && packet.at < this.activeAt) {
                 packet = undefined;
+              } else if (
+                this.activeFile &&
+                packet.heartbeat &&
+                !packet.takeover &&
+                Date.now() - this.activeSeenAt < ACTIVE_SESSION_MS
+              ) {
+                // Another game window's periodic heartbeat never takes a session
+                // that is still in use; only its player's own request can.
+                this.onHeldOff(packet.session);
+                packet = undefined;
               } else {
                 this.activeFile = file;
                 this.activeSession = packet.session;
@@ -290,12 +347,15 @@ export class DiskTransport {
             }
             if (packet && file === this.activeFile && packet.session === this.activeSession) {
               this.activeAt = Math.max(this.activeAt, packet.at);
+              this.activeSeenAt = Date.now();
               if (packet.mailboxVersion === 1) {
                 this.mailboxVersion = true;
                 this.compactAck ||= packet.compactAck === true;
                 this.bulkAvailable &&= packet.bulkAvailable !== false;
               }
-              this.deliver(packet);
+              // Duplicates (application resends) are expected here: the packet
+              // receiver dedupes by session and sequence and re-acknowledges them.
+              this.receive(packet);
             }
           }
         }
@@ -304,20 +364,6 @@ export class DiskTransport {
     if (file === this.activeFile) {
       this.repairControl(text);
     }
-  }
-  private deliver(packet: Packet) {
-    const key = packet.session + ':' + packet.seq;
-    if (this.seen.has(key)) {
-      this.receive(packet);
-      return;
-    }
-    this.seen.set(key, Date.now());
-    for (const [id, at] of this.seen) {
-      if (Date.now() - at > 3600_000) {
-        this.seen.delete(id);
-      }
-    }
-    this.receive(packet);
   }
   private repairControl(text: string) {
     if (
@@ -388,16 +434,25 @@ export class DiskTransport {
       }
       const temporary = file + '.wisp-control.tmp';
       await writeFile(temporary, replaceDownlink(current, frame), 'utf8');
-      if (this.stopped || this.activeFile !== file || this.notification !== frame) {
-        return;
+      let replaced = false;
+      try {
+        if (this.stopped || this.activeFile !== file || this.notification !== frame) {
+          return;
+        }
+        const latest = await this.sharedFile(() => readFile(file, 'utf8'));
+        // Preserve concurrent game packets and unrelated user addon settings.
+        // A changed file is retried from a fresh snapshot by the watchdog.
+        if (latest !== current) {
+          return;
+        }
+        await this.sharedFile(() => rename(temporary, file));
+        replaced = true;
+      } finally {
+        // An abandoned write must not leave its copy beside the game's files.
+        if (!replaced) {
+          await rm(temporary, { force: true }).catch(() => {});
+        }
       }
-      const latest = await this.sharedFile(() => readFile(file, 'utf8'));
-      // Preserve concurrent game packets and unrelated user addon settings.
-      // A changed file is retried from a fresh snapshot by the watchdog.
-      if (latest !== current) {
-        return;
-      }
-      await this.sharedFile(() => rename(temporary, file));
       this.lastControlWriteAt = Date.now();
       this.performance.controlWrites++;
       this.performance.wireBytes += frame.length;
@@ -674,9 +729,10 @@ export class DiskTransport {
     this.stopped = true;
     clearInterval(this.timer);
     clearInterval(this.controlTimer);
-    for (const w of this.watchers) {
-      w.close();
+    for (const watcher of this.watchers.values()) {
+      watcher.close();
     }
+    this.watchers.clear();
     await Promise.allSettled([this.scans, ...this.reads.values()]);
     await Promise.allSettled([this.writing, this.controlWriting]);
   }

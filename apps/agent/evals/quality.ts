@@ -40,17 +40,17 @@ export const scenarios: Record<string, Scenario> = {
     facts:
       character +
       `
-Sources the tools returned: TheWoWDB lists Sima Ígnea (Ragefire Chasm) as a zone for levels 13-18 inside Orgrimmar. A web guide says: Ragefire Chasm 13-18, Wailing Caverns (Cuevas de los Lamentos, the Barrens) 17-24, Deadmines 17-26 (Alliance territory, Westfall), Shadowfang Keep 22-30, and Dungeon Finder unlocks at level 13. The guide page gives the Ragefire entrance in the Cleft of Shadow (any reasonable Spanish name is acceptable). No source in the data covers dungeons above Shadowfang Keep.`,
+wow__query_dungeons returned, from the game's group finder with entrances from Wisp's table of the game's map data (5-player dungeons, name range; entrance zone x, y): Sima Ígnea 13-18 (Orgrimmar 53, 48.9); Salón de Señores Feudales 13-20 (Forjaz/Ironforge, an Alliance city); Cuevas de los Lamentos 15-24 (Los Baldíos 47.7, 35); Ruinas de Lordaeron 15-22 (Entrañas/Undercity 72.5, 11.4); Minas de la Muerte 17-26 (Páramos de Poniente/Westfall, Alliance territory); Castillo de Colmillo Oscuro 20-30 (Bosque de Argénteos 44.7, 67.8); Cavernas de Brazanegra 24-32 (Vallefresno); Sitio de Excavación: Los Humedales 26-33; Ciudad de Dalaran 28-35 (Montañas de Alterac); Gnomeregan 29-38 (Dun Morogh, Alliance territory); Horado Rajacieno 29-38 (Los Baldíos); Monasterio Escarlata - Cementerio 30-38 (Claros de Tirisfal); La Ciudad Anegada 35-42; Bastión de Krol'dok 40-47. Ruinas de Lordaeron, Salón de Señores Feudales, the Excavation Site, Dalaran, La Ciudad Anegada and Krol'dok are new in Forever (the reading does not say so; saying it is fine). No best level, quest counts or drops were returned. Forever has no automatic Dungeon Finder.`,
     goodAnswer:
-      'Answers in Spanish that a level 21 mage can already do dungeons, recommends Cuevas de los Lamentos as the right fit now (Sima Ígnea is easy and close), gives the sourced ranges, and makes clear which ranges are guidance. Any dungeon or range beyond the sources should be clearly marked as approximate or omitted; presenting unsourced ranges as fact lowers correctness.',
+      'Answers in Spanish that a level 21 mage can already do dungeons, recommends Cuevas de los Lamentos or Ruinas de Lordaeron as the right fit now, notes Sima Ígnea is easy and close, gives the returned ranges for the dungeons around this level (including the Forever-only ones), and flags dungeons whose entrance is in Alliance territory or cities. Inventing an automatic dungeon finder, dungeons or ranges not returned lowers correctness.',
   },
   'mark-rfc': {
     facts:
       character +
       `
-Sources the tools returned: Orgrimmar is UI map 1454. A guide page states the Ragefire Chasm (Sima Ígnea) entrance is in the Cleft of Shadow at 52.8, 49.6; any reasonable Spanish name for that area (such as Falla de las Sombras or Circo de las Sombras) is acceptable. The waypoint tool succeeded and reported placed=true and navigation=true.`,
+Sources the tools returned: wow__query_dungeons gives the Sima Ígnea (Ragefire Chasm) entrance on Orgrimmar, UI map 1454, at 53, 48.9 from the game's map data. The waypoint tool succeeded and reported placed=true and navigation=true.`,
     goodAnswer:
-      'Places one waypoint on Orgrimmar (1454) at 52.8, 49.6 and says so in Spanish, briefly naming where the entrance is. Does not invent other coordinates and does not refuse when a source gave them.',
+      'Places one waypoint on Orgrimmar (1454) at the wow__query_dungeons entrance 53, 48.9 and says so in Spanish, briefly. Does not invent other coordinates and does not refuse when a source gave them.',
   },
   'next-quest': {
     facts:
