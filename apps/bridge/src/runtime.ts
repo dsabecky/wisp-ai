@@ -45,6 +45,7 @@ import { freeLoopbackPort, listenOnLoopback } from './loopback-server.ts';
 import { RoutineStore } from './routines/routine-store.ts';
 import { ModelConnections } from './models/model-connections.ts';
 import { createModelCatalogRefresh } from './models/model-catalog.ts';
+import { resolveDefaultModel } from './chat/chat-model.ts';
 import { createAccountOperations } from './account-operations.ts';
 import { WebSearch } from './integrations/search/web-search.ts';
 import { ChatGPTAuth } from './auth/chatgpt-auth.ts';
@@ -123,7 +124,6 @@ export async function startBridge(options: BridgeOptions = {}) {
       return { status: 'available', entries: [...preferences, ...character] };
     }
     const config = await loadBridgeConfig(paths.config);
-    const defaultModel = config.defaultModel;
     const mcpConfig = config.get().mcpConfig;
     const mcpFile = mcpConfig
       ? path.resolve(paths.dataRoot, mcpConfig)
@@ -193,6 +193,9 @@ export async function startBridge(options: BridgeOptions = {}) {
       }
     });
     const refreshModelCatalog = createModelCatalogRefresh({ state, connections, changed });
+    // The default follows the providers the player connected, not one vendor's model.
+    const defaultModel = () => resolveDefaultModel(config.get().model, state.modelCatalog);
+    if (connections.hasProvider()) void refreshModelCatalog();
     const accounts = createAccountOperations({
       isStopping: () => shutdownRequested,
       hasActiveTurn: () => state.chats.some((c) => c.status === 'working'),
@@ -417,7 +420,7 @@ export async function startBridge(options: BridgeOptions = {}) {
         auth: auth.state(),
         grok: grok.state(),
         connections: connections.list(),
-        modelConnected: connections.connected(config.get().model || ''),
+        modelConnected: connections.connected(defaultModel()),
         search: webSearch.state(),
         model: defaultModel(),
         activeTurns: state.chats.filter((c) => c.status === 'working').length,
