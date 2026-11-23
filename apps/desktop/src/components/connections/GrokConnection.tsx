@@ -3,7 +3,7 @@ import { bridge, call } from '../../api';
 import { ActionProgress } from '../ui/ActionProgress';
 import Icon from '../ui/Icon';
 import { Badge, Button, Card } from '../ui/Controls';
-import { desktopLocked } from '../../desktop-controller';
+import { desktopLocked, grokSignInUnavailable } from '../../desktop-controller';
 import { useDesktop, useDesktopActions } from '../../use-desktop';
 
 export default function GrokConnection() {
@@ -16,6 +16,7 @@ export default function GrokConnection() {
   const { signInGrok, work, setConfirmation } = useDesktopActions();
   const navigate = useNavigate();
   const auth = app.status?.grok;
+  const unsupported = !!app.status && !auth;
   const connected = auth?.status === 'connected';
   const pending = auth?.status === 'authorizing';
   // Refresh failure and a missing plan keep the saved tokens so they can be revoked.
@@ -28,12 +29,16 @@ export default function GrokConnection() {
         <div>
           <h2>Grok account</h2>
           <p className="text-muted text-[13px]">
-            Sign in with xAI. No API key needed. A SuperGrok or X Premium+ plan covers use here.
+            {unsupported
+              ? grokSignInUnavailable
+              : 'Sign in with xAI. No API key needed. A SuperGrok or X Premium+ plan covers use here.'}
           </p>
         </div>
-        <Badge positive={connected} className="ml-auto">
-          {connected ? 'Connected' : pending ? 'Waiting for browser' : 'Not connected'}
-        </Badge>
+        {!unsupported && (
+          <Badge positive={connected} className="ml-auto">
+            {connected ? 'Connected' : pending ? 'Waiting for browser' : 'Not connected'}
+          </Badge>
+        )}
       </div>
       {auth?.account && (
         <p className="account-name mt-[24px] text-[14px]! text-[#d1e3dd]!">{auth.account}</p>
@@ -53,50 +58,54 @@ export default function GrokConnection() {
           </Button>
         </div>
       )}
-      <div className="actions mt-[22px] flex flex-wrap items-center gap-[10px]">
-        <ActionProgress label={app.busy === 'Opening sign-in' ? app.busy : ''} />
-        <Button
-          intent={connected ? 'default' : 'primary'}
-          onClick={() => void signInGrok()}
-          disabled={app.locked || !app.status}
-        >
-          {app.busy === 'Opening sign-in'
-            ? 'Opening browser…'
-            : connected
-              ? 'Reconnect'
-              : 'Continue with Grok'}
-          <Icon name="arrow" size={17} />
-        </Button>
-        {pending && (
+      {!unsupported && (
+        <div className="actions mt-[22px] flex flex-wrap items-center gap-[10px]">
+          <ActionProgress label={app.busy === 'Opening sign-in' ? app.busy : ''} />
           <Button
-            onClick={() => work('Cancelling sign-in', () => call(bridge.grok.cancel.$post()), null)}
-            disabled={!!app.busy}
+            intent={connected ? 'default' : 'primary'}
+            onClick={() => void signInGrok()}
+            disabled={app.locked || !app.status}
           >
-            Cancel sign-in
+            {app.busy === 'Opening sign-in'
+              ? 'Opening browser…'
+              : connected
+                ? 'Reconnect'
+                : 'Continue with Grok'}
+            <Icon name="arrow" size={17} />
           </Button>
-        )}
-        {sessionRetained && (
-          <Button
-            intent="quiet"
-            destructive
-            disabled={app.locked}
-            onClick={() =>
-              setConfirmation({
-                label:
-                  'Disconnect this AI connection? Your chats and memory will stay on this computer.',
-                run: () =>
-                  work(
-                    'Disconnecting',
-                    () => call(bridge.grok.disconnect.$post()),
-                    'Connection disconnected.',
-                  ),
-              })
-            }
-          >
-            Disconnect
-          </Button>
-        )}
-      </div>
+          {pending && (
+            <Button
+              onClick={() =>
+                work('Cancelling sign-in', () => call(bridge.grok.cancel.$post()), null)
+              }
+              disabled={!!app.busy}
+            >
+              Cancel sign-in
+            </Button>
+          )}
+          {sessionRetained && (
+            <Button
+              intent="quiet"
+              destructive
+              disabled={app.locked}
+              onClick={() =>
+                setConfirmation({
+                  label:
+                    'Disconnect this AI connection? Your chats and memory will stay on this computer.',
+                  run: () =>
+                    work(
+                      'Disconnecting',
+                      () => call(bridge.grok.disconnect.$post()),
+                      'Connection disconnected.',
+                    ),
+                })
+              }
+            >
+              Disconnect
+            </Button>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

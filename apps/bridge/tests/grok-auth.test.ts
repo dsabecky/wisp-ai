@@ -149,6 +149,69 @@ test('cancel during the credential write restores the previous account', async (
   expect(saved).not.toContain('refresh-private');
 });
 
+test('a failed credential write keeps the previous account', async () => {
+  const secrets = vault();
+  const now = Date.now();
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'refresh-old',
+            expiresAt: now + 120_000,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  const write = secrets.write.bind(secrets);
+  secrets.write = async (key, value) => {
+    if (value.includes('refresh-private')) throw new Error('vault timed out');
+    await write(key, value);
+  };
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    sleep: async () => {},
+    fetch: async (input) => {
+      if (String(input).endsWith('/device/code')) {
+        return Response.json({
+          device_code: 'device-private',
+          user_code: 'WISP-CODE',
+          verification_uri: 'https://auth.x.ai/device',
+          interval: 1,
+          expires_in: 600,
+        });
+      }
+      return Response.json({
+        access_token: jwt({ sub: 'user-2', email: 'bob@example.com' }),
+        refresh_token: 'refresh-private',
+        expires_in: 900,
+        scope: 'openid grok-cli:access',
+      });
+    },
+  });
+  await auth.load();
+  await auth.beginSignIn();
+  await vi.waitFor(() =>
+    expect(auth.state().message).toBe(
+      'Sign-in could not be completed. Return to Wisp and try again.',
+    ),
+  );
+  expect(auth.state().status).toBe('connected');
+  expect(auth.state().account).toBe('ada@example.com');
+  await expect(auth.accessToken()).resolves.toBe('old-access');
+  const saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).toContain('refresh-old');
+  expect(saved).not.toContain('refresh-private');
+  expect(saved).not.toContain('bob@example.com');
+});
+
 test('cancel stops the poll', async () => {
   const auth = new GrokAuth(vault(), {
     sleep: (_ms, signal) =>

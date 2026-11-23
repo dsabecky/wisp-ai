@@ -41,6 +41,10 @@ type DesktopState = {
 
 const onboardingKey = 'wisp:onboarding:v1';
 
+/** Shown when this webview is attached to a bridge that has no Grok account route. */
+export const grokSignInUnavailable =
+  'Grok sign-in needs the current Wisp service. Quit Wisp and open it again, or use an xAI API key.';
+
 function resumeOnboarding(configured: boolean) {
   try {
     const saved = localStorage.getItem(onboardingKey);
@@ -221,6 +225,11 @@ function createDesktopSession() {
 
   /** Resolves false when the sign-in page could not be opened. */
   async function signInGrok() {
+    // Older bridges omit grok. They also have no /grok/start route.
+    if (!getState().status?.grok) {
+      update({ failed: true, feedback: grokSignInUnavailable });
+      return false;
+    }
     return work(
       'Opening sign-in',
       async () => {

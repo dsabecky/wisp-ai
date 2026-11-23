@@ -116,8 +116,9 @@ export class GrokAuth {
       this.saved = savedSchema.parse(JSON.parse(raw));
     }
   }
-  private async persist() {
-    await this.vault.write('grok:accounts', JSON.stringify(this.saved));
+  private async persist(next: Saved = this.saved) {
+    await this.vault.write('grok:accounts', JSON.stringify(next));
+    this.saved = next;
     this.revision++;
     this.modelsCache = undefined;
   }
@@ -364,11 +365,17 @@ export class GrokAuth {
       frozen: false,
     };
     const previous = structuredClone(this.saved);
-    this.saved = { activeId: profile.id, profiles: [profile] };
-    await this.persist();
-    if (signal.aborted) {
+    const next: Saved = { activeId: profile.id, profiles: [profile] };
+    // Publish the new account only after the vault accepts it. A rejected write
+    // leaves the previous session in memory and on disk.
+    try {
+      await this.persist(next);
+    } catch (error) {
       this.saved = previous;
-      await this.persist();
+      throw error;
+    }
+    if (signal.aborted) {
+      await this.persist(previous);
       throw new GrokAuthError('Sign-in cancelled.');
     }
   }

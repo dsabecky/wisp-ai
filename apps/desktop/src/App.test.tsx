@@ -3,7 +3,7 @@ import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 
 import App, { createDesktopRouter } from './App';
-import { desktopStore } from './desktop-controller';
+import { desktopStore, grokSignInUnavailable } from './desktop-controller';
 import { desktop, type Status } from './api';
 import { bridgeRequest as request } from './api/bridge-request';
 import { listen } from '@tauri-apps/api/event';
@@ -1674,6 +1674,40 @@ test('a retained Grok session can disconnect when it cannot stay connected', asy
   };
   await act(() => desktopStore.getState().actions.refresh());
   expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+});
+
+test('an older bridge hides Grok subscription sign-in and keeps xAI API setup', async () => {
+  const router = renderApp();
+  await screen.findByRole('heading', { name: 'Wisp is ready' });
+  await act(() => router.navigate('/connections/xai'));
+  await screen.findByRole('heading', { name: 'Grok account' });
+  expect(screen.getByText(grokSignInUnavailable)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Continue with Grok' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Add API connection' })).toBeTruthy();
+  await desktopStore.getState().actions.signInGrok();
+  expect(request).not.toHaveBeenCalledWith('/grok/start', undefined);
+  expect(desktopStore.getState().failed).toBe(true);
+  expect(desktopStore.getState().feedback).toBe(grokSignInUnavailable);
+});
+
+test('Grok onboarding keeps API setup when the bridge has no account route', async () => {
+  localStorage.setItem('wisp:onboarding:v1', 'pending');
+  status.auth = { status: 'signed_out', profiles: [], revision: 1 };
+  status.model = '';
+  status.modelConnected = false;
+  renderApp();
+  await fireEvent.click(await screen.findByRole('button', { name: 'Browse providers' }));
+  const catalog = within(await screen.findByRole('dialog', { name: 'Browse providers' }));
+  await fireEvent.input(catalog.getByRole('searchbox', { name: 'Search providers' }), {
+    target: { value: 'grok' },
+  });
+  await fireEvent.click(catalog.getByRole('button', { name: 'Grok' }));
+  await screen.findByRole('heading', { level: 2, name: 'Grok' });
+  expect(screen.queryByRole('button', { name: 'Continue with Grok' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Subscription' })).toBeNull();
+  expect(screen.getByText(grokSignInUnavailable)).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Use API key' }));
+  expect(screen.getByLabelText('API key')).toBeTruthy();
 });
 
 test('onboarding searches the provider catalog and suggests a single saved model', async () => {

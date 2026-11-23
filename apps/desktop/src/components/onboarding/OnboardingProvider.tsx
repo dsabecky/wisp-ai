@@ -1,7 +1,7 @@
 import { GROK_SUBSCRIPTION_ID, type ProviderId } from '@wisp/protocol/providers';
 import { useEffect, useRef, useState } from 'react';
 import { bridge, call } from '../../api';
-import { desktopLocked } from '../../desktop-controller';
+import { desktopLocked, grokSignInUnavailable } from '../../desktop-controller';
 import { useDesktop, useDesktopActions } from '../../use-desktop';
 import ConnectionEditor from '../connections/ConnectionEditor';
 import DefaultModelSettings from '../connections/DefaultModelSettings';
@@ -26,13 +26,14 @@ export default function OnboardingProvider({
   onFinish: () => void;
   signInTracking: SignInTracking;
 }) {
-  const { auth, grok, grokCode, connections, locked, busy } = useDesktop((state) => ({
+  const { auth, grok, grokCode, connections, locked, busy, online } = useDesktop((state) => ({
     auth: state.status?.auth,
     grok: state.status?.grok,
     grokCode: state.grokCode,
     connections: state.status?.connections,
     locked: desktopLocked(state),
     busy: state.busy,
+    online: !!state.status,
   }));
   const { signIn, signInGrok, work } = useDesktopActions();
   const subscriptionProvider = provider === 'openai' || provider === 'xai';
@@ -86,6 +87,7 @@ export default function OnboardingProvider({
   const existing = connections?.filter((connection) => connection.provider === provider) ?? [];
   const api = method === 'api';
   const backToMethods = subscriptionProvider && api;
+  const grokUnavailable = provider === 'xai' && online && !grok;
 
   return (
     <>
@@ -128,73 +130,82 @@ export default function OnboardingProvider({
           />
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t [border-top-style:solid] border-t-border pt-4">
-              <div>
-                <h3 className="m-0 text-[14px]">Subscription</h3>
-                <p className="m-0 text-[13px] text-muted">
-                  {pending
-                    ? 'Finish signing in from your browser.'
-                    : provider === 'xai'
-                      ? 'Sign in with your xAI account.'
-                      : 'Sign in with your ChatGPT account.'}
-                </p>
-                {pending && provider === 'xai' && grokCode && (
-                  <p className="text-[13px]" role="status">
-                    Confirm this code in your browser: <strong>{grokCode}</strong>
+            {grokUnavailable ? (
+              <p
+                className="m-0 border-t [border-top-style:solid] border-t-border pt-4 text-[13px] text-muted"
+                role="status"
+              >
+                {grokSignInUnavailable}
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t [border-top-style:solid] border-t-border pt-4">
+                <div>
+                  <h3 className="m-0 text-[14px]">Subscription</h3>
+                  <p className="m-0 text-[13px] text-muted">
+                    {pending
+                      ? 'Finish signing in from your browser.'
+                      : provider === 'xai'
+                        ? 'Sign in with your xAI account.'
+                        : 'Sign in with your ChatGPT account.'}
                   </p>
-                )}
-                {account?.message && (
-                  <p className="text-[13px] text-muted" role="status">
-                    {account.message}
-                  </p>
+                  {pending && provider === 'xai' && grokCode && (
+                    <p className="text-[13px]" role="status">
+                      Confirm this code in your browser: <strong>{grokCode}</strong>
+                    </p>
+                  )}
+                  {account?.message && (
+                    <p className="text-[13px] text-muted" role="status">
+                      {account.message}
+                    </p>
+                  )}
+                </div>
+                {pending ? (
+                  <Button
+                    disabled={!!busy}
+                    onClick={() => {
+                      signInTracking.cancelling();
+                      void work(
+                        'Cancelling sign-in',
+                        () =>
+                          call(
+                            provider === 'xai'
+                              ? bridge.grok.cancel.$post()
+                              : bridge.auth.cancel.$post(),
+                          ),
+                        null,
+                      );
+                    }}
+                  >
+                    Cancel sign-in
+                  </Button>
+                ) : (
+                  <Button
+                    intent="primary"
+                    disabled={locked || (provider === 'xai' && !grok)}
+                    onClick={() => {
+                      setMethod('subscription');
+                      // An existing session was already reported when its sign-in ended.
+                      if (connected) return;
+                      signInTracking.started(provider);
+                      const opening =
+                        provider === 'xai' ? signInGrok() : signIn(auth?.activeId || undefined);
+                      void opening.then((opened) => {
+                        if (!opened) signInTracking.openFailed(provider);
+                      });
+                    }}
+                  >
+                    {busy === 'Opening sign-in'
+                      ? 'Opening browser…'
+                      : connected
+                        ? 'Use subscription'
+                        : provider === 'xai'
+                          ? 'Continue with Grok'
+                          : 'Continue with ChatGPT'}
+                    <Icon name="arrow" size={16} />
+                  </Button>
                 )}
               </div>
-              {pending ? (
-                <Button
-                  disabled={!!busy}
-                  onClick={() => {
-                    signInTracking.cancelling();
-                    void work(
-                      'Cancelling sign-in',
-                      () =>
-                        call(
-                          provider === 'xai'
-                            ? bridge.grok.cancel.$post()
-                            : bridge.auth.cancel.$post(),
-                        ),
-                      null,
-                    );
-                  }}
-                >
-                  Cancel sign-in
-                </Button>
-              ) : (
-                <Button
-                  intent="primary"
-                  disabled={locked}
-                  onClick={() => {
-                    setMethod('subscription');
-                    // An existing session was already reported when its sign-in ended.
-                    if (connected) return;
-                    signInTracking.started(provider);
-                    const opening =
-                      provider === 'xai' ? signInGrok() : signIn(auth?.activeId || undefined);
-                    void opening.then((opened) => {
-                      if (!opened) signInTracking.openFailed(provider);
-                    });
-                  }}
-                >
-                  {busy === 'Opening sign-in'
-                    ? 'Opening browser…'
-                    : connected
-                      ? 'Use subscription'
-                      : provider === 'xai'
-                        ? 'Continue with Grok'
-                        : 'Continue with ChatGPT'}
-                  <Icon name="arrow" size={16} />
-                </Button>
-              )}
-            </div>
+            )}
             <div className="flex flex-wrap items-center justify-between gap-3 border-t [border-top-style:solid] border-t-border pt-4">
               <div>
                 <h3 className="m-0 text-[14px]">API key</h3>
