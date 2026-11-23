@@ -384,11 +384,15 @@ export class GrokAuth {
       tokens: stored,
       frozen: false,
     };
-    const previous = structuredClone(this.saved);
     const next: Saved = { activeId: profile.id, profiles: [profile] };
-    // Publish the new account only after the vault accepts it, and roll it
-    // back in the same turn so a queued refresh cannot land between the two.
+    // Earlier refresh or rejection writes run first. Snapshot and recheck
+    // cancellation only after they publish, so a cancelled login cannot roll
+    // back onto a token that rotation has already replaced.
     await this.exclusive(async () => {
+      if (signal.aborted) {
+        throw new GrokAuthError('Sign-in cancelled.');
+      }
+      const previous = structuredClone(this.saved);
       await this.writeSaved(next);
       if (signal.aborted) {
         await this.writeSaved(previous);

@@ -149,6 +149,111 @@ test('cancel during the credential write restores the previous account', async (
   expect(saved).not.toContain('refresh-private');
 });
 
+test('cancel after a queued refresh keeps the refreshed session', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  const write = secrets.write.bind(secrets);
+  let releaseRefresh = () => {};
+  let refreshEntered = () => {};
+  const refreshingWrite = new Promise<void>((resolve) => {
+    refreshEntered = resolve;
+  });
+  let releaseLogin = () => {};
+  let loginEntered = () => {};
+  const loginWrite = new Promise<void>((resolve) => {
+    loginEntered = resolve;
+  });
+  let sawRefresh = false;
+  let sawLogin = false;
+  secrets.write = async (key, value) => {
+    if (value.includes('renewed-refresh') && !sawRefresh) {
+      sawRefresh = true;
+      refreshEntered();
+      await new Promise<void>((resolve) => {
+        releaseRefresh = resolve;
+      });
+    }
+    if (value.includes('refresh-private') && !sawLogin) {
+      sawLogin = true;
+      loginEntered();
+      await new Promise<void>((resolve) => {
+        releaseLogin = resolve;
+      });
+    }
+    await write(key, value);
+  };
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    sleep: async () => {},
+    fetch: async (input, init) => {
+      const url = String(input);
+      const body = String(init?.body || '');
+      if (url.endsWith('/device/code')) {
+        return Response.json({
+          device_code: 'device-private',
+          user_code: 'WISP-CODE',
+          verification_uri: 'https://auth.x.ai/device',
+          interval: 1,
+          expires_in: 600,
+        });
+      }
+      if (body.includes('grant_type=refresh_token')) {
+        return Response.json({
+          access_token: 'renewed-access',
+          refresh_token: 'renewed-refresh',
+          expires_in: 900,
+          scope: 'grok-cli:access',
+        });
+      }
+      return Response.json({
+        access_token: jwt({ sub: 'user-2', email: 'bob@example.com' }),
+        refresh_token: 'refresh-private',
+        expires_in: 900,
+        scope: 'openid grok-cli:access',
+      });
+    },
+  });
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: now,
+            scopes: ['grok-cli:access'],
+          },
+        },
+      ],
+    }),
+  );
+  await auth.load();
+  const refreshing = auth.accessToken();
+  await refreshingWrite;
+  await auth.beginSignIn();
+  for (let step = 0; step < 8; step += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  releaseRefresh();
+  await loginWrite;
+  const cancel = auth.cancel();
+  await new Promise((resolve) => setImmediate(resolve));
+  releaseLogin();
+  await cancel;
+  await expect(refreshing).resolves.toBe('renewed-access');
+  expect(auth.state().status).toBe('connected');
+  expect(auth.state().account).toBe('ada@example.com');
+  expect(auth.state().message).toBe('Sign-in cancelled.');
+  const saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).toContain('renewed-refresh');
+  expect(saved).not.toContain('old-refresh');
+  expect(saved).not.toContain('refresh-private');
+});
+
 test('a failed credential write keeps the previous account', async () => {
   const secrets = vault();
   const now = Date.now();
