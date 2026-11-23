@@ -16,3 +16,4 @@
 ## Fixed
 
 - With two game windows open, Wisp no longer switches between them every few seconds, interrupting answers and leaving messages stuck on "Waiting for bridge". The window you last typed in keeps Wisp.
+- When WoW stops answering Wisp, the answer no longer stalls for minutes trying to read your character again and again: after the first 30-second wait, Wisp answers with what it knows and suggests /reload.
