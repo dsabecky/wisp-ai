@@ -9,10 +9,12 @@ import { createHash } from 'node:crypto';
 import { savedRoutine } from '@wisp/protocol/routines';
 import { ChatStore, conversationInstanceId } from '@wisp/bridge/chat-store';
 import { newChat } from '@wisp/bridge/chat-lifecycle';
+import { resolveStdioCommand } from '@wisp/bridge/mcp-manager';
+import { runtimeNodeName } from '../scripts/runtime-node.mjs';
 
 const exec = promisify(execFile);
 const engineName = process.platform === 'win32' ? 'wisp-engine.exe' : 'wisp-engine';
-const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
+const nodeName = runtimeNodeName();
 function packagedPath(root: string) {
   const runtime = path.join(root, 'runtime');
   return process.platform === 'win32'
@@ -268,6 +270,22 @@ test.runIf(Boolean(process.env.WISP_TEST_ENGINE_EXECUTABLE))(
       });
       expect(nodeCompatibility.stdout).toContain('wisp-node-shim-ok');
       expect(await readdir(path.join(root, 'runtime'))).toEqual([nodeName]);
+      const previousEngine = process.env.WISP_ENGINE_EXECUTABLE;
+      process.env.WISP_ENGINE_EXECUTABLE = engine;
+      try {
+        const launch = resolveStdioCommand('node', ['-e', 'console.log("wisp-mcp-node-ok")'], root);
+        expect(launch.command).toBe(path.join(root, 'runtime', nodeName));
+        const mcpNode = await exec(launch.command, launch.args, {
+          cwd: root,
+          env,
+          windowsHide: true,
+          timeout: 10_000,
+        });
+        expect(mcpNode.stdout).toContain('wisp-mcp-node-ok');
+      } finally {
+        if (previousEngine === undefined) delete process.env.WISP_ENGINE_EXECUTABLE;
+        else process.env.WISP_ENGINE_EXECUTABLE = previousEngine;
+      }
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }

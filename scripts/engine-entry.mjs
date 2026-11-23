@@ -2,15 +2,12 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { packagedRuntimeNode } from './runtime-node.mjs';
 
 process.env.WISP_ENGINE_EXECUTABLE = process.execPath;
 process.env.WISP_RESOURCE_ROOT ||= path.dirname(process.execPath);
 function runtimeNode() {
-  return path.join(
-    process.env.WISP_RESOURCE_ROOT,
-    'runtime',
-    process.platform === 'win32' ? 'node.exe' : 'node',
-  );
+  return packagedRuntimeNode(process.env.WISP_RESOURCE_ROOT);
 }
 const mode = process.argv[2] || 'src/main.ts';
 if (mode === '--version') {

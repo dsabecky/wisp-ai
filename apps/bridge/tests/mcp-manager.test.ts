@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { McpManager, mcpSetup } from '../src/integrations/mcp/mcp-manager.ts';
+import { McpManager, mcpSetup, resolveStdioCommand } from '../src/integrations/mcp/mcp-manager.ts';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createServer } from 'node:http';
@@ -74,6 +74,34 @@ test(
     }
   },
 );
+test('a packaged node MCP uses the platform runtime, and development uses this process', () => {
+  const root = path.join(tmpdir(), 'wisp-mcp-node');
+  const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
+  const previous = process.env.WISP_ENGINE_EXECUTABLE;
+  process.env.WISP_ENGINE_EXECUTABLE = 'wisp-engine';
+  try {
+    assert.equal(
+      resolveStdioCommand('node', ['server.js'], root).command,
+      path.join(root, 'runtime', nodeName),
+    );
+    assert.equal(
+      resolveStdioCommand('NODE.EXE', ['server.js'], root).command,
+      path.join(root, 'runtime', nodeName),
+    );
+    assert.deepEqual(resolveStdioCommand('npx', ['--yes', 'some-mcp'], root), {
+      command: process.execPath,
+      args: ['--npx', '--yes', 'some-mcp'],
+    });
+  } finally {
+    if (previous === undefined) delete process.env.WISP_ENGINE_EXECUTABLE;
+    else process.env.WISP_ENGINE_EXECUTABLE = previous;
+  }
+  assert.equal(resolveStdioCommand('node', ['server.js'], root).command, process.execPath);
+  assert.equal(
+    resolveStdioCommand('npx', ['--yes', 'some-mcp'], root).args[0],
+    path.join(root, 'runtime', 'npm', 'bin', 'npx-cli.js'),
+  );
+});
 test('MCP setup rejects embedded URL credentials and keeps command arguments structured', () => {
   assert.throws(() =>
     mcpSetup.parse({ server: { name: 'test', url: 'https://user:secret@example.com/mcp' } }),
