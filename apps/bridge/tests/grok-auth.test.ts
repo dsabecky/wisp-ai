@@ -212,6 +212,61 @@ test('a failed credential write keeps the previous account', async () => {
   expect(saved).not.toContain('bob@example.com');
 });
 
+test('a failed disconnect write keeps the saved session', async () => {
+  const secrets = vault();
+  const now = 1_000_000;
+  await secrets.write(
+    'grok:accounts',
+    JSON.stringify({
+      activeId: 'user-1',
+      profiles: [
+        {
+          id: 'user-1',
+          email: 'ada@example.com',
+          tokens: {
+            accessToken: 'old-access',
+            refreshToken: 'refresh-old',
+            expiresAt: now + 120_000,
+            scopes: ['grok-cli:access'],
+          },
+          frozen: true,
+        },
+      ],
+    }),
+  );
+  const write = secrets.write.bind(secrets);
+  let rejectClear = true;
+  secrets.write = async (key, value) => {
+    const saved = JSON.parse(value) as { profiles: { tokens?: unknown }[] };
+    if (rejectClear && saved.profiles.some((profile) => !profile.tokens)) {
+      rejectClear = false;
+      throw new Error('vault timed out');
+    }
+    await write(key, value);
+  };
+  const revoked: string[] = [];
+  const auth = new GrokAuth(secrets, {
+    now: () => now,
+    fetch: async (_input, init) => {
+      revoked.push(String(init?.body || ''));
+      return new Response(null, { status: 200 });
+    },
+  });
+  await auth.load();
+  expect(auth.state().status).toBe('reauth_required');
+  await expect(auth.disconnect()).rejects.toThrow('vault timed out');
+  expect(auth.state().status).toBe('reauth_required');
+  expect(auth.state().account).toBe('ada@example.com');
+  let saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).toContain('refresh-old');
+  expect(saved).toContain('old-access');
+  const again = await auth.disconnect();
+  expect(again.status).toBe('signed_out');
+  saved = secrets.values.get('grok:accounts') || '';
+  expect(saved).not.toContain('refresh-old');
+  expect(revoked.filter((body) => body.includes('refresh-old'))).toHaveLength(2);
+});
+
 test('cancel stops the poll', async () => {
   const auth = new GrokAuth(vault(), {
     sleep: (_ms, signal) =>

@@ -484,9 +484,15 @@ export class GrokAuth {
             logger.warn({ event: 'grok.revoke_failed', error: errorMessage(error) });
           }
         }
-        profile.tokens = undefined;
-        profile.frozen = false;
-        await this.persist();
+        // Clear tokens only in the copy the vault accepts. A rejected write
+        // keeps the live profile, so Disconnect stays available.
+        const next = structuredClone(this.saved);
+        const cleared = next.profiles.find((entry) => entry.id === profile.id);
+        if (cleared) {
+          cleared.tokens = undefined;
+          cleared.frozen = false;
+        }
+        await this.persist(next);
       }
       this.message = confirmed
         ? 'Wisp disconnected. Your other apps stay signed in.'
