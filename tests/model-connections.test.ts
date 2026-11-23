@@ -7,6 +7,7 @@ import { connectionModel } from '@wisp/agent/connection-model';
 import { providerDefinitions, connectionModelSlug } from '@wisp/protocol/providers';
 import { desktopRoutes } from '@wisp/protocol/desktop-routes';
 import type { ChatGPTAuth } from '@wisp/bridge/chatgpt-auth';
+import { GROK_SUBSCRIPTION_ID } from '@wisp/bridge/grok-auth';
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -977,3 +978,43 @@ test.each(['anthropic', 'google', 'compatible', 'gateway'] as const)(
     }
   },
 );
+
+test('a signed-in Grok account is used instead of an API key', async () => {
+  const requests: { url: string; headers: Headers; body: Record<string, unknown> }[] = [];
+  const { manager } = await fixture(async (url, init) => {
+    requests.push({
+      url: String(url),
+      headers: new Headers(init?.headers),
+      body: JSON.parse(String(init?.body)),
+    });
+    return new Response('{"ok":true}', { status: 200 });
+  });
+  const grok = {
+    state: () => ({ status: 'connected' }),
+    models: async () => [{ id: 'grok-4.5', name: 'Grok 4.5' }],
+    accessToken: async () => 'oauth-token',
+  };
+  Object.assign(manager, { grok });
+  const slug = connectionModelSlug(GROK_SUBSCRIPTION_ID, 'grok-4.5');
+  expect((await manager.models()).some((model) => model.slug === slug)).toBe(true);
+  expect(await manager.selection(slug)).toEqual({
+    connectionId: GROK_SUBSCRIPTION_ID,
+    provider: 'xai',
+    modelId: 'grok-4.5',
+  });
+  const response = await manager.forward(
+    GROK_SUBSCRIPTION_ID,
+    '/responses',
+    JSON.stringify({ model: 'grok-4.5', store: true }),
+    new Headers({ authorization: 'Bearer loopback' }),
+    new AbortController().signal,
+  );
+  expect(response.status).toBe(200);
+  expect(requests[0]!.url).toBe('https://cli-chat-proxy.grok.com/v1/responses');
+  expect(requests[0]!.headers.get('authorization')).toBe('Bearer oauth-token');
+  expect(requests[0]!.headers.get('x-xai-token-auth')).toBe('xai-grok-cli');
+  expect(requests[0]!.headers.get('x-grok-client-version')).toBe('1.0.92');
+  expect(requests[0]!.headers.get('x-grok-model-override')).toBe('grok-4.5');
+  expect(requests[0]!.body.store).toBe(false);
+  expect(JSON.stringify(requests)).not.toContain('loopback');
+});

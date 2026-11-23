@@ -32,6 +32,8 @@ type DesktopState = {
   confirm: Confirmation | null;
   connectionError: string;
   modelsError: string;
+  /** Code the user confirms while a Grok browser sign-in is in progress. */
+  grokCode: string;
   onboarding: boolean;
   /** The automatic addon update after an app update is running. */
   addonUpdating: boolean;
@@ -68,6 +70,7 @@ const initialState: DesktopState = {
   confirm: null,
   connectionError: '',
   modelsError: '',
+  grokCode: '',
   onboarding: false,
   addonUpdating: false,
 };
@@ -133,12 +136,20 @@ function createDesktopSession() {
     try {
       const status = await call(bridge.status.$get());
       if (disposed) return;
-      update({ status, connectionError: '', starting: false });
+      update({
+        status,
+        connectionError: '',
+        starting: false,
+        ...(status.grok?.status === 'authorizing' ? {} : { grokCode: '' }),
+      });
       syncAppUpdate(status.appUpdate);
       const catalogRevision = JSON.stringify([
         status.auth.activeId,
         status.auth.status,
         status.auth.revision,
+        status.grok?.activeId,
+        status.grok?.status,
+        status.grok?.revision,
         status.connections,
       ]);
       if (catalogRevision !== loadedAccount && !desktopLocked(getState())) {
@@ -209,6 +220,18 @@ function createDesktopSession() {
   }
 
   /** Resolves false when the sign-in page could not be opened. */
+  async function signInGrok() {
+    return work(
+      'Opening sign-in',
+      async () => {
+        const { authorizationUrl, userCode } = await call(bridge.grok.start.$post());
+        update({ grokCode: userCode });
+        await desktop('open_sign_in', { url: authorizationUrl });
+      },
+      'Continue in your browser. Wisp will update when sign-in completes.',
+    );
+  }
+
   async function signIn(profileId?: string, add = false) {
     return work(
       'Opening sign-in',
@@ -396,6 +419,7 @@ function createDesktopSession() {
       work,
       loadModels,
       signIn,
+      signInGrok,
       searchInstallations,
       install,
       importPrevious,

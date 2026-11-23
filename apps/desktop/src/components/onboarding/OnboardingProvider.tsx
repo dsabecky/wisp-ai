@@ -26,20 +26,24 @@ export default function OnboardingProvider({
   onFinish: () => void;
   signInTracking: SignInTracking;
 }) {
-  const { auth, connections, locked, busy } = useDesktop((state) => ({
+  const { auth, grok, grokCode, connections, locked, busy } = useDesktop((state) => ({
     auth: state.status?.auth,
+    grok: state.status?.grok,
+    grokCode: state.grokCode,
     connections: state.status?.connections,
     locked: desktopLocked(state),
     busy: state.busy,
   }));
-  const { signIn, work } = useDesktopActions();
+  const { signIn, signInGrok, work } = useDesktopActions();
+  const subscriptionProvider = provider === 'openai' || provider === 'xai';
+  const account = provider === 'xai' ? grok : auth;
   const [method, setMethod] = useState<'choose' | 'api' | 'subscription'>(
-    provider === 'openai' ? 'choose' : 'api',
+    subscriptionProvider ? 'choose' : 'api',
   );
   const [connectionId, setConnectionId] = useState<string>();
   const name = providerPresentation(provider).name;
-  const connected = auth?.status === 'connected';
-  const pending = auth?.status === 'authorizing';
+  const connected = account?.status === 'connected';
+  const pending = account?.status === 'authorizing';
   const reviewing = !!connectionId || (method === 'subscription' && connected);
   const panel = useRef<HTMLHeadingElement>(null);
 
@@ -70,7 +74,7 @@ export default function OnboardingProvider({
 
   const existing = connections?.filter((connection) => connection.provider === provider) ?? [];
   const api = method === 'api';
-  const backToMethods = provider === 'openai' && api;
+  const backToMethods = subscriptionProvider && api;
 
   return (
     <>
@@ -82,7 +86,7 @@ export default function OnboardingProvider({
         onClick={backToMethods ? () => setMethod('choose') : onBack}
       >
         <Icon name="back" size={16} />
-        {backToMethods ? 'Back to ChatGPT' : 'Back to providers'}
+        {backToMethods ? `Back to ${name}` : 'Back to providers'}
       </Button>
       <Card kind="provider" className="grid gap-4 p-5">
         <div className="flex items-center gap-3">
@@ -119,11 +123,18 @@ export default function OnboardingProvider({
                 <p className="m-0 text-[13px] text-muted">
                   {pending
                     ? 'Finish signing in from your browser.'
-                    : 'Sign in with your ChatGPT account.'}
+                    : provider === 'xai'
+                      ? 'Sign in with your xAI account.'
+                      : 'Sign in with your ChatGPT account.'}
                 </p>
-                {auth?.message && (
+                {pending && provider === 'xai' && grokCode && (
+                  <p className="text-[13px]" role="status">
+                    Confirm this code in your browser: <strong>{grokCode}</strong>
+                  </p>
+                )}
+                {account?.message && (
                   <p className="text-[13px] text-muted" role="status">
-                    {auth.message}
+                    {account.message}
                   </p>
                 )}
               </div>
@@ -132,7 +143,16 @@ export default function OnboardingProvider({
                   disabled={!!busy}
                   onClick={() => {
                     signInTracking.cancelling();
-                    void work('Cancelling sign-in', () => call(bridge.auth.cancel.$post()), null);
+                    void work(
+                      'Cancelling sign-in',
+                      () =>
+                        call(
+                          provider === 'xai'
+                            ? bridge.grok.cancel.$post()
+                            : bridge.auth.cancel.$post(),
+                        ),
+                      null,
+                    );
                   }}
                 >
                   Cancel sign-in
@@ -146,7 +166,9 @@ export default function OnboardingProvider({
                     // An existing session was already reported when its sign-in ended.
                     if (connected) return;
                     signInTracking.started(provider);
-                    void signIn(auth?.activeId || undefined).then((opened) => {
+                    const opening =
+                      provider === 'xai' ? signInGrok() : signIn(auth?.activeId || undefined);
+                    void opening.then((opened) => {
                       if (!opened) signInTracking.openFailed(provider);
                     });
                   }}
@@ -155,7 +177,9 @@ export default function OnboardingProvider({
                     ? 'Opening browser…'
                     : connected
                       ? 'Use subscription'
-                      : 'Continue with ChatGPT'}
+                      : provider === 'xai'
+                        ? 'Continue with Grok'
+                        : 'Continue with ChatGPT'}
                   <Icon name="arrow" size={16} />
                 </Button>
               )}
@@ -163,7 +187,11 @@ export default function OnboardingProvider({
             <div className="flex flex-wrap items-center justify-between gap-3 border-t [border-top-style:solid] border-t-border pt-4">
               <div>
                 <h3 className="m-0 text-[14px]">API key</h3>
-                <p className="m-0 text-[13px] text-muted">Use your OpenAI API credits.</p>
+                <p className="m-0 text-[13px] text-muted">
+                  {provider === 'xai'
+                    ? 'Use your xAI API credits.'
+                    : 'Use your OpenAI API credits.'}
+                </p>
               </div>
               <Button disabled={locked} onClick={() => setMethod('api')}>
                 Use API key
