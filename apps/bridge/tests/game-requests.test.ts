@@ -139,3 +139,38 @@ test('a timeout reports whether the addon kept talking while the request waited'
     vi.useRealTimers();
   }
 });
+
+test('a valid late answer to a timed-out read lets new requests through again', async () => {
+  vi.useFakeTimers();
+  try {
+    let clock = 1_000_000;
+    const requests = new GameRequests(() => {}, { now: () => clock });
+    const read = requests.request({ chat: 'chat', session: 'one', sections: ['gear'] });
+    const [{ id: first }] = requests.snapshot();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const [{ id: retried }] = requests.snapshot();
+    const rejected = expect(read).rejects.toThrow('did not respond');
+    clock += 30_000;
+    await vi.advanceTimersByTimeAsync(20_000);
+    await rejected;
+    await expect(requests.request({ chat: 'chat', session: 'one' })).rejects.toThrow(
+      'was not sent',
+    );
+
+    // Answers from the wrong window or conversation do not count.
+    expect(requests.receive(first, 'two', 'chat', {})).toBe(false);
+    expect(requests.receive(first, 'one', 'other', {})).toBe(false);
+    await expect(requests.request({ chat: 'chat', session: 'one' })).rejects.toThrow(
+      'was not sent',
+    );
+
+    // WoW answers the original ID late: the rejected read stays rejected, new ones are sent.
+    expect(requests.receive(retried, 'one', 'chat', { late: true })).toBe(false);
+    const next = requests.request({ chat: 'chat', session: 'one', sections: ['gear'] });
+    expect(requests.snapshot()).toHaveLength(1);
+    requests.cancelAll('done');
+    await expect(next).rejects.toThrow('done');
+  } finally {
+    vi.useRealTimers();
+  }
+});

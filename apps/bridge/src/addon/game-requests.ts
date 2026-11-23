@@ -40,6 +40,8 @@ export class GameRequests {
   private onTimeout: (timeout: GameTimeout) => void;
   private lastHeardAt = 0;
   private unresponsiveSince?: number;
+  /** IDs of recently timed-out requests, kept only to recognize a late answer. */
+  private timedOut = new Map<string, { session: string; chat: string }>();
   constructor(changed: () => void, options: GameRequestOptions = {}) {
     this.changed = changed;
     this.now = options.now ?? Date.now;
@@ -106,6 +108,14 @@ export class GameRequests {
           addonSilent: this.lastHeardAt <= startedAt,
           waitedMs: timedOutAt - startedAt,
         });
+        // Remember every ID this request used, so a late answer proves WoW recovered.
+        for (const timedOutId of [id, ...previousIds]) {
+          this.timedOut.set(timedOutId, { session: input.session, chat: input.chat });
+        }
+        for (const oldest of this.timedOut.keys()) {
+          if (this.timedOut.size <= 64) break;
+          this.timedOut.delete(oldest);
+        }
         finish(() => reject(new Error(TIMEOUT_MESSAGE)));
       }, timeout);
       signal?.addEventListener('abort', abort, { once: true });
@@ -128,6 +138,13 @@ export class GameRequests {
       this.unresponsiveSince = undefined;
       request.resolve(value);
       return true;
+    }
+    // A valid answer to a request that already timed out: its promise stays
+    // rejected, but WoW is answering again, so stop failing new requests.
+    const late = this.timedOut.get(requestId);
+    if (late?.session === session && late.chat === chat) {
+      this.timedOut.delete(requestId);
+      this.unresponsiveSince = undefined;
     }
     return false;
   }
