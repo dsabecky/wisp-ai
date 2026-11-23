@@ -30,18 +30,87 @@ struct InstalledClient {
     folder: String,
 }
 
-fn database_candidates(roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut bases = Vec::new();
-    if let Some(program_data) = std::env::var_os("ProgramData") {
-        bases.push(PathBuf::from(program_data));
-    }
-    bases.extend(roots.iter().map(|r| r.join("ProgramData")));
+fn product_databases(drive: &Path) -> [PathBuf; 2] {
+    [
+        drive.join("ProgramData/Battle.net/Agent/product.db"),
+        drive.join("programdata/Battle.net/Agent/product.db"),
+    ]
+}
+
+fn deduped(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
-    bases
+    paths
         .into_iter()
-        .map(|p| p.join("Battle.net/Agent/product.db"))
-        .filter(|p| seen.insert(p.to_string_lossy().to_lowercase()))
+        .filter(|path| seen.insert(path.to_string_lossy().to_lowercase()))
         .collect()
+}
+
+/// Wine, Proton, Bottles and Lutris prefixes keep Battle.net's database under `drive_c`.
+pub fn linux_drive_roots(home: &Path, data: &Path, wineprefix: Option<&Path>) -> Vec<PathBuf> {
+    let mut drives = Vec::new();
+    let mut push = |drive: PathBuf| {
+        if drive.is_dir() && !drives.iter().any(|existing| existing == &drive) {
+            drives.push(drive);
+        }
+    };
+    push(home.join(".wine/drive_c"));
+    if let Some(prefix) = wineprefix {
+        push(prefix.join("drive_c"));
+    }
+    let mut children = |directory: PathBuf, nested: &[&str]| {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return;
+        };
+        for entry in entries.flatten().take(512) {
+            let mut drive = entry.path();
+            for part in nested {
+                drive.push(part);
+            }
+            push(drive);
+        }
+    };
+    children(data.join("bottles/bottles"), &["drive_c"]);
+    children(data.join("lutris/prefixes"), &["drive_c"]);
+    children(home.join("Games"), &["drive_c"]);
+    for steam in [
+        home.join(".steam/steam/steamapps/compatdata"),
+        home.join(".steam/root/steamapps/compatdata"),
+        home.join(".local/share/Steam/steamapps/compatdata"),
+        data.join("Steam/steamapps/compatdata"),
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata"),
+    ] {
+        children(steam, &["pfx", "drive_c"]);
+    }
+    drives
+}
+
+fn database_candidates(roots: &[PathBuf]) -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".local/share"));
+        let wineprefix = std::env::var_os("WINEPREFIX").map(PathBuf::from);
+        let mut drives = linux_drive_roots(&home, &data, wineprefix.as_deref());
+        drives.extend(roots.iter().cloned());
+        return deduped(drives.iter().flat_map(|drive| product_databases(drive)));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut bases = Vec::new();
+        if let Some(program_data) = std::env::var_os("ProgramData") {
+            bases.push(PathBuf::from(program_data));
+        }
+        bases.extend(roots.iter().map(|root| root.join("ProgramData")));
+        deduped(
+            bases
+                .into_iter()
+                .map(|base| base.join("Battle.net/Agent/product.db")),
+        )
+    }
 }
 
 fn registered_clients(path: &Path) -> Vec<PathBuf> {
@@ -91,7 +160,8 @@ fn small_text(path: &Path) -> String {
 }
 
 fn forever(path: &Path) -> bool {
-    if !path.join("Wow.exe").is_file() {
+    // Wine prefixes are case-sensitive, so accept the client under either name.
+    if !path.join("Wow.exe").is_file() && !path.join("wow.exe").is_file() {
         return false;
     }
     let flavor = small_text(&path.join(".flavor.info"));
@@ -337,6 +407,38 @@ mod tests {
         .unwrap();
         assert!(!forever(&game));
         assert!(scan(vec![], Duration::ZERO, |_| {}).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linux_prefixes_expose_battle_net_databases() {
+        let root = std::env::temp_dir().join(format!("wisp-linux-prefixes-{}", std::process::id()));
+        let home = root.join("home");
+        let data = home.join(".local/share");
+        let wineprefix = home.join("custom-prefix");
+        for drive in [
+            home.join(".wine/drive_c"),
+            data.join("bottles/bottles/wow/drive_c"),
+            home.join(".steam/steam/steamapps/compatdata/123/pfx/drive_c"),
+            wineprefix.join("drive_c"),
+        ] {
+            fs::create_dir_all(&drive).unwrap();
+        }
+        let drives = linux_drive_roots(&home, &data, Some(&wineprefix));
+        for expected in [
+            home.join(".wine/drive_c"),
+            data.join("bottles/bottles/wow/drive_c"),
+            home.join(".steam/steam/steamapps/compatdata/123/pfx/drive_c"),
+            wineprefix.join("drive_c"),
+        ] {
+            assert!(
+                drives.iter().any(|drive| drive == &expected),
+                "{expected:?}"
+            );
+        }
+        assert!(product_databases(&home.join(".wine/drive_c"))
+            .into_iter()
+            .any(|path| path.ends_with("ProgramData/Battle.net/Agent/product.db")));
         fs::remove_dir_all(root).unwrap();
     }
 }

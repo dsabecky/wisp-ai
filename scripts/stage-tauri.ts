@@ -18,10 +18,10 @@ export async function stageTauri({ packaged = false } = {}) {
   // Hoisting is restricted to the standalone deployment: Windows installer resources
   // must contain real directories, without junctions back to the developer's store.
   if (packaged) {
-    const { buildEngine } = await import('./build-engine.ts');
+    const { buildEngine, engineExecutableName } = await import('./build-engine.ts');
     const executable = await buildEngine();
     await mkdir(stage, { recursive: true });
-    await copyFile(executable, path.join(stage, 'wisp-engine.exe'));
+    await copyFile(executable, path.join(stage, engineExecutableName()));
     const eve = path.dirname(fileURLToPath(import.meta.resolve('eve/package.json')));
     await copyFile(path.join(eve, 'LICENSE'), path.join(stage, 'EVE-LICENSE.txt'));
     await copyFile(path.join(eve, 'NOTICE'), path.join(stage, 'EVE-NOTICE.txt'));

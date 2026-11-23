@@ -88,7 +88,7 @@ tests keep their existing skips when the required binaries are absent.
 CI runs the general TypeScript suites on Ubuntu, excluding
 `apps/bridge/tests/simulation.test.ts`. A separate Windows job runs that complete
 file against the pinned simulator, so engine tests do not silently skip on Linux.
-On `main`, Windows release runs the validation workflow in parallel with packaging
+On `main`, the release workflow runs validation in parallel with packaging
 and installer verification. Nightly publication waits for both to pass. The release
 input check gates only packaging, so web/docs-only pushes still receive all checks
 without building or publishing an installer. Tag builds and manual builds outside
@@ -174,13 +174,33 @@ application `node_modules` tree. `payload/runtime/node.exe` remains bundled for
 user-configured external MCP programs. Development staging keeps the source-based
 layout and Eve development server.
 
-`pnpm package:engine` builds just `dist/wisp-engine.exe` and runs the packaged
+`pnpm package:engine` builds `dist/wisp-engine.exe` on Windows and `dist/wisp-engine` on Linux, then runs the packaged
 integration checks. Those tests relocate the executable to a temporary directory,
 remove Node from the child process PATH, complete a streamed model turn and a
 real tool call against local fixtures, restart Eve to verify session persistence,
 and run a local npm executable offline. They reject loose dependency extraction.
 The installer CI additionally checks the native host, installation, upgrades and
 preservation of user data.
+
+## Build and run on Linux
+
+Install the workspace toolchain, then the native desktop libraries. On Debian and Ubuntu:
+
+```sh
+sudo apt-get install build-essential pkg-config libssl-dev libgtk-3-dev \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf file libxdo-dev
+```
+
+A secret service must be running before Wisp can store provider credentials. GNOME Keyring and KWallet both implement it. Unlock the keyring for the user who launches the app.
+
+```sh
+pnpm desktop:dev
+pnpm package:linux
+```
+
+`desktop:dev` stages a development bridge and opens the Tauri app. `package:linux` writes `dist/WispAI-<version>-linux-<arch>.AppImage` and `dist/WispAI-<version>-linux-<arch>.deb`. The AppImage receives signed in-app updates. The Debian package is installed with the system package manager and does not update itself. Choose the Wine, Proton, Bottles or Lutris folder that contains `Wow.exe`. Wisp looks for Battle.net’s `product.db` in the default Wine prefix, Steam compatibility directories, Bottles and `~/Games`.
+
+Gear comparisons call the pinned Windows `wowsimcli.exe`. Linux packages leave that binary out, so the tool does not run there. Build it on Windows and place it in `simulator/` before `pnpm package:linux` if a package should carry the same executable. The rest of the companion runs on Linux.
 
 ### Usage analytics
 
@@ -267,7 +287,7 @@ combine them with click events or treat them as unique installations.
 
 ### Publishing app updates
 
-Installed Windows x64 release builds check `https://github.com/fedeya/wisp-ai/releases/latest/download/latest.json` at startup and every six hours. **Settings > Check for updates** checks manually. Users review release notes and choose **Update and restart**; the app verifies the download before stopping the bridge, waits for active replies and installs through NSIS. Chats, credentials and settings remain in AppData. Development builds and other platforms do not install updates. On the next launch, Desktop updates an existing Wisp addon if its files differ from the bundled copy and shows a `/reload` reminder in Overview if WoW is open. If the automatic update fails, use **Update addon** in Overview to retry.
+Installed Windows x64 release builds and the Linux AppImage check `https://github.com/fedeya/wisp-ai/releases/latest/download/latest.json` at startup and every six hours. **Settings > Check for updates** checks manually. Users review release notes and choose **Update and restart**; the app verifies the download before stopping the bridge, waits for active replies and installs through NSIS on Windows or by replacing the AppImage on Linux. Chats, credentials and settings remain in the application data directory. Development builds and the Debian package do not install updates. On the next launch, Desktop updates an existing Wisp addon if its files differ from the bundled copy and shows a `/reload` reminder in Overview if WoW is open. If the automatic update fails, use **Update addon** in Overview to retry.
 
 The updater public key is checked into `apps/desktop/src-tauri/tauri.conf.json`. Its private key is stored outside the repository at `%USERPROFILE%\.tauri\wisp-ai.key` on the machine where it was generated and in the repository's `TAURI_SIGNING_PRIVATE_KEY` Actions secret. Keep a secure backup: changing the public key breaks updates for existing installations. The generated key has no password; if using a password-protected replacement before the first public release, also configure `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 

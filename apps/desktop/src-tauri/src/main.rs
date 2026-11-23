@@ -47,6 +47,22 @@ fn hidden(command: &mut Command) {
     let _ = command;
 }
 
+fn engine_filename() -> &'static str {
+    if cfg!(windows) {
+        "wisp-engine.exe"
+    } else {
+        "wisp-engine"
+    }
+}
+
+fn node_filename() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
 impl Host {
     fn child_running(&self) -> Result<bool, String> {
         let mut child = self
@@ -63,18 +79,16 @@ impl Host {
     }
 
     fn node(&self) -> PathBuf {
-        let engine = self.payload.join("wisp-engine.exe");
+        let engine = self.payload.join(engine_filename());
         if engine.is_file() {
             return engine;
         }
-        self.payload
-            .join("runtime")
-            .join(if cfg!(windows) { "node.exe" } else { "node" })
+        self.payload.join("runtime").join(node_filename())
     }
     fn command(&self, script: &str) -> Result<Command, String> {
         let mut command = Command::new(self.node());
         command
-            .arg(if self.payload.join("wisp-engine.exe").is_file() {
+            .arg(if self.payload.join(engine_filename()).is_file() {
                 PathBuf::from(script)
             } else {
                 self.payload.join(script)
@@ -828,7 +842,18 @@ fn prepare_update() -> Result<(), String> {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = pid.filter(|id| running && *id > 0 && *id <= i32::MAX as u64) {
+        let started = std::time::Instant::now();
+        let proc_path = PathBuf::from(format!("/proc/{pid}"));
+        while proc_path.exists() {
+            if started.elapsed() >= Duration::from_secs(20) {
+                return Err("The previous Wisp bridge is still stopping.".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (pid, running);
     Ok(())
 }
@@ -889,7 +914,7 @@ fn main() {
                         .ok_or("Missing executable directory")?
                         .join("payload"),
                 );
-            let engine = payload.join("wisp-engine.exe");
+            let engine = payload.join(engine_filename());
             let required: &[&str] = if engine.is_file() {
                 &["addon/WispAI/WispAI.toc", "BUILD.json", "package.json"]
             } else {
@@ -909,9 +934,7 @@ fn main() {
             let mut command = Command::new(if engine.is_file() {
                 engine.clone()
             } else {
-                payload
-                    .join("runtime")
-                    .join(if cfg!(windows) { "node.exe" } else { "node" })
+                payload.join("runtime").join(node_filename())
             });
             hidden(&mut command);
             if !command
