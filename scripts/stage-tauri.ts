@@ -6,7 +6,7 @@ import { verifySimulator } from './verify-simulator.ts';
 import { findNpmDirectory } from './node-runtime.ts';
 import { addonReleaseVersion, stampAddonReleaseVersion } from './addon-release-version.ts';
 import { engineExecutableName } from './build-engine.ts';
-import { runtimeNodeName } from './runtime-node.mjs';
+import { runtimeNodeName } from '../apps/bridge/src/runtime-node.mjs';
 
 function payloadDirectory(root: string) {
   const stage = path.resolve(root, 'apps/desktop/src-tauri/resources/payload');

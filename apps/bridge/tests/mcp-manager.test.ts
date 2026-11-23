@@ -1,6 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { McpManager, mcpSetup, resolveStdioCommand } from '../src/integrations/mcp/mcp-manager.ts';
@@ -74,6 +75,21 @@ test(
     }
   },
 );
+test('the node runtime helper stays inside the bridge package that desktop dev deploys', async () => {
+  const bridgeRoot = fileURLToPath(new URL('..', import.meta.url));
+  const helper = fileURLToPath(new URL('../src/runtime-node.mjs', import.meta.url));
+  assert.equal(path.dirname(path.dirname(helper)), path.resolve(bridgeRoot));
+  const source = await readFile(
+    new URL('../src/integrations/mcp/mcp-manager.ts', import.meta.url),
+    'utf8',
+  );
+  const specifier = source.match(/from '([^']*runtime-node\.mjs)'/)?.[1];
+  assert.equal(typeof specifier, 'string');
+  const imported = fileURLToPath(
+    new URL(specifier!, new URL('../src/integrations/mcp/mcp-manager.ts', import.meta.url)),
+  );
+  assert.equal(imported, helper);
+});
 test('a packaged node MCP uses the platform runtime, and development uses this process', () => {
   const root = path.join(tmpdir(), 'wisp-mcp-node');
   const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';

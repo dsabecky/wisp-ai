@@ -65,7 +65,10 @@ export async function buildEngine() {
     },
   });
   await cp(path.join(root, 'scripts/engine-entry.mjs'), path.join(directory, 'engine.mjs'));
-  await cp(path.join(root, 'scripts/runtime-node.mjs'), path.join(directory, 'runtime-node.mjs'));
+  await cp(
+    path.join(root, 'apps/bridge/src/runtime-node.mjs'),
+    path.join(directory, 'runtime-node.mjs'),
+  );
   await cp(path.join(root, 'apps/bridge/src/db/migrations'), path.join(directory, 'migrations'), {
     recursive: true,
   });

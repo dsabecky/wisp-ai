@@ -9,7 +9,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { SecretVault } from '../../auth/secret-vault.ts';
 import { mcpName as name, mcpDefinition, mcpSetup } from '@wisp/protocol/mcp-setup';
-import { packagedRuntimeNode } from '../../../../../scripts/runtime-node.mjs';
+import { packagedRuntimeNode } from '../../runtime-node.mjs';
 export { mcpDefinition, mcpSetup };
 export type MCPDefinition = z.infer<typeof mcpDefinition> & {
   tools?: { name: string; description?: string }[];
