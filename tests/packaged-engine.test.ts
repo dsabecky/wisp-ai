@@ -10,7 +10,7 @@ import { savedRoutine } from '@wisp/protocol/routines';
 import { ChatStore, conversationInstanceId } from '@wisp/bridge/chat-store';
 import { newChat } from '@wisp/bridge/chat-lifecycle';
 import { resolveStdioCommand } from '@wisp/bridge/mcp-manager';
-import { runtimeNodeName } from '../apps/bridge/src/runtime-node.mjs';
+import { runtimeNodeName } from '@wisp/bridge/runtime-node';
 
 const exec = promisify(execFile);
 const engineName = process.platform === 'win32' ? 'wisp-engine.exe' : 'wisp-engine';
